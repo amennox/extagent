@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><title>Nuovo fornitore</title>
+<style>
+ body{font-family:sans-serif;margin:20px} .tab{display:none} .tab.active{display:block}
+ .toast{position:fixed;top:10px;right:10px;background:#c00;color:#fff;padding:8px}
+ .cb{border:1px solid #888;padding:4px;width:200px;cursor:pointer}
+ .opts{border:1px solid #888;width:200px} .opts div{padding:3px;cursor:pointer}
+</style></head>
+<body>
+<h1>Nuovo fornitore</h1>
+<div role="tablist">
+  <button role="tab" id="t1" aria-selected="true" onclick="show(1)">Anagrafica *</button>
+  <button role="tab" id="t2" onclick="show(2)">Pagamento *</button>
+</div>
+<form id="f" onsubmit="return save(event)">
+  <div class="tab active" id="p1">
+    <label for="rs">Ragione sociale</label> <input id="rs" name="ragione_sociale" required><br>
+    <label for="piva">Partita IVA</label> <input id="piva" name="piva" required><br>
+    <label>Categoria <div class="cb" role="combobox" aria-expanded="false" tabindex="0" id="cat" onclick="toggle()">Seleziona…</div></label>
+    <div class="opts" id="opts" role="listbox" hidden>
+      <div role="option" onclick="pick('Servizi IT')">Servizi IT</div>
+      <div role="option" onclick="pick('Consulenza')">Consulenza</div>
+    </div>
+  </div>
+  <div class="tab" id="p2">
+    <label for="iban">IBAN</label> <input id="iban" name="iban" required><br>
+    <label for="term">Termini</label>
+    <select id="term" name="termini"><option value="">--</option><option value="30">30 giorni</option><option value="60">60 giorni</option></select>
+  </div>
+  <button type="submit">Salva</button>
+</form>
+<div id="result"></div>
+<script>
+let category='';
+function show(n){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.getElementById('p'+n).classList.add('active');
+  document.querySelectorAll('[role=tab]').forEach((t,i)=>t.setAttribute('aria-selected', String(i+1===n)));}
+function toggle(){const o=document.getElementById('opts');o.hidden=!o.hidden;document.getElementById('cat').setAttribute('aria-expanded', String(!o.hidden));}
+function pick(v){category=v;document.getElementById('cat').textContent=v;toggle();}
+function save(e){e.preventDefault();document.querySelectorAll('.toast').forEach(t=>t.remove());
+  const missing=['rs','piva','iban'].filter(id=>!document.getElementById(id).value);
+  if(missing.length||!category){const t=document.createElement('div');t.className='toast';t.setAttribute('role','alert');
+    t.textContent='Errore: compilare i campi obbligatori '+missing.join(', ')+(category?'':' categoria');document.body.appendChild(t);return false;}
+  document.getElementById('result').textContent='Salvato: '+document.getElementById('rs').value+' / '+category+' / '+document.getElementById('term').value;
+  document.getElementById('result').setAttribute('role','status');return false;}
+</script>
+<input id="rs-hidden" type="hidden" value="x">
+</body></html>

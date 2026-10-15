@@ -1,15 +1,15 @@
-import { RecordingStep } from '../background/recordingManager';
+import type { CapturedAction } from '../procedures/builder';
+
+/** @deprecated alias kept for older imports */
+export type RecordingStep = CapturedAction;
 
 /**
  * ActionLog — records the browser actions the AGENT performs during a task,
- * in replayable RecordingStep form (resolved selectors included).
- *
- * On a successful task the log can be persisted as an auto-generated
- * recording and linked to the reflected memory, making the memory directly
- * replayable via the deterministic ReplayEngine (zero LLM on reuse).
+ * with resolved locators. After a successful task the operator can save the
+ * log as a procedure with one click ("Save as procedure").
  */
 class ActionLogImpl {
-  private steps: RecordingStep[] = [];
+  private steps: CapturedAction[] = [];
   private enabled = true;
 
   reset(): void {
@@ -20,7 +20,7 @@ class ActionLogImpl {
     this.enabled = v;
   }
 
-  push(step: RecordingStep): void {
+  push(step: CapturedAction): void {
     if (!this.enabled) return;
     // Merge consecutive type steps on the same selector (keep the last value)
     const last = this.steps[this.steps.length - 1];
@@ -31,7 +31,7 @@ class ActionLogImpl {
     this.steps.push({ ...step, timestamp: step.timestamp ?? Date.now() });
   }
 
-  snapshot(): RecordingStep[] {
+  snapshot(): CapturedAction[] {
     return [...this.steps];
   }
 
@@ -42,18 +42,3 @@ class ActionLogImpl {
 
 export const ActionLog = new ActionLogImpl();
 
-/**
- * Name handoff between the outcome handler (which saves the auto recording)
- * and the reflection controller (which links it to the new memory).
- */
-let pendingRecordingName: string | null = null;
-
-export function setPendingRecordingName(name: string | null): void {
-  pendingRecordingName = name;
-}
-
-export function consumePendingRecordingName(): string | null {
-  const n = pendingRecordingName;
-  pendingRecordingName = null;
-  return n;
-}

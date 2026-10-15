@@ -45,12 +45,17 @@ export interface ModelProfile {
    */
   extraBody?: string;
   /**
-   * Also send the tool schemas as native OpenAI function calling (default
-   * false). The canonical protocol is the XML format described in the system
-   * prompt; sending BOTH confuses models (mixed-format tool calls) and bloats
-   * the server-side prompt with duplicated schemas.
+   * Use native OpenAI function calling (default: true when undefined). Set
+   * to false for endpoints/models without tool support: the agent then falls
+   * back to the XML text protocol described in the system prompt. The agent
+   * also falls back automatically when the endpoint rejects `tools`.
    */
   nativeToolCalling?: boolean;
+  /**
+   * The model accepts images (vision). When true, observations include an
+   * annotated screenshot (Set-of-Marks) sent as an image_url content part.
+   */
+  supportsImages?: boolean;
   contextWindowSize?: number;
   temperature?: number;
   maxTokens?: number;
@@ -81,9 +86,41 @@ export interface ProviderOptions {
   thinkingBudgetTokens?: number;
 }
 
+export interface StreamToolCall {
+  id: string;
+  name: string;
+  /** Raw JSON arguments string as returned by the model */
+  arguments: string;
+}
+
+export interface StreamError {
+  status?: number | string;
+  message: string;
+  /** The endpoint rejected native tool calling (fallback to XML protocol) */
+  toolsUnsupported?: boolean;
+  /** The request exceeded the model context window */
+  contextOverflow?: boolean;
+}
+
+/** OpenAI chat content part (text or image). */
+export type ContentPart =
+  | { type: 'text'; text: string }
+  | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } };
+
+/** OpenAI-shaped chat message used across the agent. */
+export interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | ContentPart[] | null;
+  tool_calls?: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }>;
+  tool_call_id?: string;
+  name?: string;
+}
+
 export interface StreamChunk {
-  type: "text" | "reasoning" | "usage";
+  type: "text" | "reasoning" | "usage" | "tool_call" | "error";
   text?: string;
+  toolCall?: StreamToolCall;
+  error?: StreamError;
   reasoning?: string;
   inputTokens?: number;
   outputTokens?: number;

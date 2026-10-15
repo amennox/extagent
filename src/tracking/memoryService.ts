@@ -260,6 +260,57 @@ export class MemoryService {
     logWithTimestamp(`Successfully deleted memory with ID ${id}`);
   }
 
+  /** Operator validation from the options UI. */
+  public async setValidated(id: number, validated = true): Promise<void> {
+    const all = await this._loadAll();
+    const idx = all.findIndex(m => m.id === String(id));
+    if (idx < 0) return;
+    all[idx] = { ...all[idx], validated, updatedAt: new Date().toISOString() };
+    await this._saveAll(all);
+  }
+
+  /** Edit the text of a memory from the options UI. */
+  public async updateTaskDescription(id: number, text: string): Promise<void> {
+    if (/<[^>]+>/.test(text)) throw new Error('HTML is not allowed in memories');
+    const all = await this._loadAll();
+    const idx = all.findIndex(m => m.id === String(id));
+    if (idx < 0) return;
+    all[idx] = { ...all[idx], pattern: text, updatedAt: new Date().toISOString() };
+    await this._saveAll(all);
+  }
+
+  public async exportJson(): Promise<string> {
+    return JSON.stringify(await this._loadAll(), null, 2);
+  }
+
+  /** Import a JSON export (skips duplicates on domain + text). Returns the number added. */
+  public async importJson(json: string): Promise<number> {
+    const incoming = JSON.parse(json);
+    if (!Array.isArray(incoming)) throw new Error('Invalid memories file');
+    const all = await this._loadAll();
+    let count = 0;
+    for (const raw of incoming) {
+      const pattern = raw?.pattern ?? raw?.taskDescription;
+      if (!raw?.domain || typeof pattern !== 'string') continue;
+      const domain = normalizeDomain(raw.domain);
+      if (all.some(e => e.domain === domain && e.pattern === pattern)) continue;
+      const now = new Date().toISOString();
+      all.push({
+        id: String(Date.now() + count),
+        domain,
+        pattern,
+        toolSequence: Array.isArray(raw.toolSequence) ? raw.toolSequence : [],
+        validated: raw.validated === true,
+        createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+        updatedAt: now,
+        useCount: Number(raw.useCount) || 0,
+      });
+      count++;
+    }
+    await this._saveAll(all);
+    return count;
+  }
+
   /** Clear all memories. */
   public async clearMemories(): Promise<void> {
     await this._saveAll([]);

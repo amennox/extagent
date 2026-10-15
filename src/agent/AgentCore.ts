@@ -2,8 +2,9 @@ import type { Page } from "playwright-crx";
 import { ConfigManager, ProviderConfig } from "../background/configManager";
 import { createProvider } from "../models/providers/factory";
 import { AgentFunction, LLMProvider, ModelProfile } from "../models/providers/types";
+import type { PlanStep } from "./AgentState";
 import { ErrorHandler } from "./ErrorHandler";
-import { ExecutionEngine, ExecutionCallbacks, DEFAULT_MAX_STEPS } from "./ExecutionEngine";
+import { ExecutionEngine, ExecutionCallbacks, ExecuteOptions, RunResult, DEFAULT_MAX_STEPS } from "./ExecutionEngine";
 import { MemoryManager } from "./MemoryManager";
 import { initializePageContext } from "./PageContextManager";
 import { PromptManager } from "./PromptManager";
@@ -116,6 +117,11 @@ export class BrowserAgent {
     });
   }
 
+  /** The LLM provider (procedure extraction / analysis outside the loop). */
+  getLlmProvider(): LLMProvider {
+    return this.llmProvider;
+  }
+
   /**
    * Cancel the current execution
    */
@@ -142,36 +148,32 @@ export class BrowserAgent {
   setDebugMode(enabled: boolean): void { this.executionEngine.setDebugMode(enabled); }
   getLastRunStats() { return this.executionEngine.getLastRunStats(); }
 
-  /** One-shot plan generation for long multi-step tasks (Level: single LLM call). */
-  async generatePlan(prompt: string, lang: 'it' | 'en'): Promise<string | null> {
+  /** One-shot plan generation for long multi-step tasks (single LLM call). */
+  async generatePlan(prompt: string, lang: 'it' | 'en'): Promise<PlanStep[] | null> {
     try {
       const system = lang === 'it'
-        ? 'Sei un pianificatore. Dato un compito di automazione browser, produci un piano di 3-6 passi numerati, brevi e concreti. SOLO il piano, nessun altro testo.'
-        : 'You are a planner. Given a browser automation task, produce a numbered plan of 3-6 short, concrete steps. ONLY the plan, no other text.';
+        ? 'Sei un pianificatore. Dato un compito di automazione browser, produci un piano di 3-6 passi numerati, brevi e concreti, uno per riga. SOLO il piano, nessun altro testo.'
+        : 'You are a planner. Given a browser automation task, produce a numbered plan of 3-6 short, concrete steps, one per line. ONLY the plan, no other text.';
       const stream = this.llmProvider.createMessage(system, [{ role: 'user', content: prompt }], undefined, undefined);
       let text = '';
       for await (const chunk of stream) {
         if (chunk.type === 'text' && chunk.text) text += chunk.text;
+        if (chunk.type === 'error') return null;
       }
-      text = text.trim();
-      return text.length > 10 && text.length < 2000 ? text : null;
+      const steps = text.split('\n')
+        .map(l => l.replace(/^\s*(\d+[.)]|[-*•])\s*/, '').trim())
+        .filter(l => l.length > 2 && l.length < 200)
+        .slice(0, 8);
+      return steps.length >= 2 ? steps.map((title, i) => ({ title, status: i === 0 ? 'doing' : 'todo' })) : null;
     } catch {
       return null;
     }
   }
 
-  /**
-   * Auto-inject the top-ranked memories for a domain into the message history
-   * (validated first). Called at task start so the model doesn't need to
-   * remember to invoke lookup_memories itself. Non-blocking on failure.
-   */
-  async injectMemoriesForDomain(domain: string, messages: any[]): Promise<void> {
-    try {
-      if (!(await MemoryManager.isMemoryEnabled())) return;
-      await this.memoryManager.lookupMemories(domain, messages);
-    } catch (error) {
-      console.warn('Memory auto-injection failed (continuing without):', error);
-    }
+  /** Hint with the top memories for a domain (and their ids, for reinforcement). */
+  async memoryHintForDomain(domain: string, lang: 'it' | 'en'): Promise<{ hint: string; ids: number[] } | null> {
+    if (!(await MemoryManager.isMemoryEnabled())) return null;
+    return this.memoryManager.buildMemoryHint(domain, lang);
   }
 
   /**
@@ -189,18 +191,15 @@ export class BrowserAgent {
     prompt: string,
     callbacks: ExecutionCallbacks,
     initialMessages: any[] = [],
-    agentFunction?: AgentFunction
-  ): Promise<void> {
+    agentFunction?: AgentFunction,
+    options: ExecuteOptions = {}
+  ): Promise<RunResult> {
     if (agentFunction) {
       const profile = await this.configManager.resolveProfileForFunction(agentFunction)
         .catch(() => null);
-      this.executionEngine.setActiveProfile(profile);
+      if (profile) this.executionEngine.setActiveProfile(profile);
     }
-    return this.executionEngine.executePromptWithFallback(
-      prompt,
-      callbacks,
-      initialMessages
-    );
+    return this.executionEngine.executePromptWithFallback(prompt, callbacks, initialMessages, options);
   }
 
   /**
@@ -209,14 +208,10 @@ export class BrowserAgent {
   async executePrompt(
     prompt: string,
     callbacks: ExecutionCallbacks,
-    initialMessages: any[] = []
-  ): Promise<void> {
-    return this.executionEngine.executePrompt(
-      prompt,
-      callbacks,
-      initialMessages,
-      false // Non-streaming mode
-    );
+    initialMessages: any[] = [],
+    options: ExecuteOptions = {}
+  ): Promise<RunResult> {
+    return this.executionEngine.executePrompt(prompt, callbacks, initialMessages, true, options);
   }
 }
 
@@ -309,10 +304,8 @@ export async function executePrompt(
   prompt: string,
   callbacks: ExecutionCallbacks,
   initialMessages: any[] = []
-): Promise<void> {
+): Promise<RunResult> {
   return agent.executePrompt(prompt, callbacks, initialMessages);
-  // Note: The agent's executePrompt method now includes the isStreaming parameter
-  // with a default value of false, so we don't need to pass it here
 }
 
 /**
@@ -323,7 +316,8 @@ export async function executePromptWithFallback(
   prompt: string,
   callbacks: ExecutionCallbacks,
   initialMessages: any[] = [],
-  agentFunction?: AgentFunction
-): Promise<void> {
-  return agent.executePromptWithFallback(prompt, callbacks, initialMessages, agentFunction);
+  agentFunction?: AgentFunction,
+  options: ExecuteOptions = {}
+): Promise<RunResult> {
+  return agent.executePromptWithFallback(prompt, callbacks, initialMessages, agentFunction, options);
 }

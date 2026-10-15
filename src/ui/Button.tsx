@@ -39,6 +39,8 @@ export function Button({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
+    whiteSpace: 'nowrap',
+    flex: fullWidth ? '1 1 auto' : '0 0 auto',
     width: fullWidth ? '100%' : 'auto',
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.45 : 1,

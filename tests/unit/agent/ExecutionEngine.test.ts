@@ -1,492 +1,253 @@
+/**
+ * @jest-environment node
+ */
+jest.mock('../../../src/agent/approvalManager', () => ({ requestApproval: jest.fn() }));
+jest.mock('../../../src/background/tabManager', () => ({ getWindowForTab: () => 1 }));
+
 import { ExecutionEngine, ExecutionCallbacks } from '../../../src/agent/ExecutionEngine';
-import { createMockProvider } from '../../mocks/providers';
-import { createMockPage } from '../../mocks/playwright';
-import { ToolManager } from '../../../src/agent/ToolManager';
-import { PromptManager } from '../../../src/agent/PromptManager';
-import { MemoryManager } from '../../../src/agent/MemoryManager';
 import { ErrorHandler } from '../../../src/agent/ErrorHandler';
-import { BrowserTool } from '../../../src/agent/tools/types';
+import { MemoryManager } from '../../../src/agent/MemoryManager';
+import { resetPageContext, setCurrentPage } from '../../../src/agent/PageContextManager';
+import { PromptManager } from '../../../src/agent/PromptManager';
+import { ToolManager } from '../../../src/agent/ToolManager';
+import { requestApproval } from '../../../src/agent/approvalManager';
+import { _setCurrentMap } from '../../../src/agent/tools/pageMapTools';
+import type { ChatMessage, LLMProvider, StreamChunk } from '../../../src/models/providers/types';
 
-// Mock dependencies
-jest.mock('../../../src/tracking/tokenTrackingService', () => ({
-  TokenTrackingService: {
-    getInstance: jest.fn().mockReturnValue({
-      trackInputTokens: jest.fn(),
-      trackOutputTokens: jest.fn(),
-    }),
-  },
-}));
+type Script = (req: { messages: ChatMessage[]; tools: any[]; n: number; system: string }) => StreamChunk[] | Error;
 
-jest.mock('../../../src/agent/approvalManager', () => ({
-  requestApproval: jest.fn().mockResolvedValue(true),
-}));
+class Scripted implements LLMProvider {
+  requests: Array<{ messages: ChatMessage[]; tools: any[]; system: string }> = [];
+  summaries = 0;
+  constructor(private script: Script) {}
+  async *createMessage(system: string, messages: any[], tools?: any[]) {
+    if (!/DomMotion/.test(system)) { this.summaries++; yield { type: 'text', text: 'SUMMARY' } as StreamChunk; return; }
+    const req = { system, messages: JSON.parse(JSON.stringify(messages)), tools: tools ?? [] };
+    this.requests.push(req);
+    const out = this.script({ ...req, n: this.requests.length });
+    if (out instanceof Error) throw out;
+    for (const c of out) yield c;
+  }
+  getModel() { return { id: 'm', info: { name: 'm', inputPrice: 0, outputPrice: 0, contextWindow: 32000 } }; }
+  getDefaultProfile() { return null; }
+}
+
+let id = 0;
+const call = (name: string, args: Record<string, unknown> = {}): StreamChunk => ({ type: 'tool_call', toolCall: { id: `c${++id}`, name, arguments: JSON.stringify(args) } });
+const text = (t: string): StreamChunk => ({ type: 'text', text: t });
+const lastText = (m: ChatMessage[]) => {
+  const c = m[m.length - 1].content;
+  return typeof c === 'string' ? c : (c ?? []).map((p: any) => p.text ?? '[img]').join('\n');
+};
+
+function fakeTools(overrides: Record<string, (input: string) => Promise<any>> = {}) {
+  const make = (name: string, fn: (input: string) => Promise<any>) => ({ name, description: name, func: jest.fn(fn) });
+  const base: Record<string, (input: string) => Promise<any>> = {
+    browser_observe: async () => 'Page: x\nInteractive elements (act with the [number]):\n[1] button "Salva"\n[2] button "Elimina tutto"',
+    browser_click_ref: async (i) => `Clicked [${i}] · stable\nChanges:\nno visible changes`,
+    browser_fill_ref: async (i) => `Filled ${i} · stable\nChanges:\n~ [3] textbox "Nome" = "x"`,
+    browser_navigate: async (u) => `Navigated to ${u}\nInteractive elements (act with the [number]):\n[1] link "Home"`,
+    browser_read_text: async () => 'testo della pagina',
+    extract_with_schema: async () => '{"rows":[1,2,3]}',
+    ...overrides,
+  };
+  return Object.entries(base).map(([n, f]) => make(n, f));
+}
+
+function setup(script: Script, opts: { tools?: any[]; contextWindowSize?: number; nativeToolCalling?: boolean } = {}) {
+  const page: any = { url: () => 'https://erp.example.com/fornitori', title: async () => 'Fornitori', context: () => ({ pages: () => [1, 2] }), evaluate: jest.fn() };
+  setCurrentPage(page);
+  const tools = opts.tools ?? fakeTools();
+  const provider = new Scripted(script);
+  const engine = new ExecutionEngine(provider, new ToolManager(page, tools), new PromptManager(tools), new MemoryManager(), new ErrorHandler());
+  engine.setActiveProfile({ id: 'p', name: 'p', modelId: 'm', contextWindowSize: opts.contextWindowSize ?? 32000, nativeToolCalling: opts.nativeToolCalling } as any);
+  engine.setMinMsBetweenCalls(0);
+  engine.setStepRetryDelayMs(1);
+  const log: string[] = [];
+  const finals: string[] = [];
+  const cb: ExecutionCallbacks = {
+    onLlmOutput: (s) => finals.push(s),
+    onToolOutput: (s) => log.push(s),
+    onComplete: () => log.push('COMPLETE'),
+    onLlmChunk: () => undefined,
+  };
+  return { engine, provider, tools, log, finals, cb };
+}
 
 describe('ExecutionEngine', () => {
-  let executionEngine: ExecutionEngine;
-  let mockProvider: any;
-  let mockPage: any;
-  let toolManager: ToolManager;
-  let promptManager: PromptManager;
-  let memoryManager: MemoryManager;
-  let errorHandler: ErrorHandler;
-  let mockTools: BrowserTool[];
-  let mockToolFunctions: jest.MockedFunction<any>[];
+  beforeEach(() => { (requestApproval as jest.Mock).mockReset(); _setCurrentMap(null); });
+  afterEach(() => resetPageContext());
 
-  beforeEach(() => {
-    mockProvider = createMockProvider();
-    mockPage = createMockPage();
-    
-    // Create mock tool functions
-    mockToolFunctions = [
-      jest.fn().mockResolvedValue('Screenshot taken successfully'),
-      jest.fn().mockResolvedValue('Navigation completed'),
-      jest.fn().mockResolvedValue('Element clicked'),
-    ];
-    
-    // Create mock tools with proper Jest mocks
-    mockTools = [
-      {
-        name: 'browser_screenshot',
-        description: 'Take a screenshot of the current page',
-        func: mockToolFunctions[0],
-      },
-      {
-        name: 'browser_navigate',
-        description: 'Navigate to a URL',
-        func: mockToolFunctions[1],
-      },
-      {
-        name: 'browser_click',
-        description: 'Click an element',
-        func: mockToolFunctions[2],
-      },
-    ];
-
-    // Initialize components
-    toolManager = new ToolManager(mockPage, mockTools);
-    promptManager = new PromptManager(mockTools);
-    memoryManager = new MemoryManager(mockTools);
-    errorHandler = new ErrorHandler();
-
-    executionEngine = new ExecutionEngine(
-      mockProvider,
-      toolManager,
-      promptManager,
-      memoryManager,
-      errorHandler
-    );
-
-    jest.clearAllMocks();
+  it('runs several native tool calls per turn and ends with one final answer', async () => {
+    const { engine: e2, provider: p2, tools: t2, finals: f2, log: l2, cb } = setup(({ n }) =>
+      n === 1 ? [text('Compilo.'), call('browser_fill_ref', { ref: 3, text: 'x' }), call('browser_read_text')] : [text('Fatto.')]);
+    const result = await e2.executePrompt('Compila', cb, [], true);
+    expect(result).toMatchObject({ outcome: 'success', finalText: 'Fatto.' });
+    expect(result.stats).toMatchObject({ toolCalls: 2, toolErrors: 0, steps: 2, actions: 1 });
+    expect((t2.find(t => t.name === 'browser_fill_ref')!.func as jest.Mock).mock.calls[0][0]).toBe('{"ref":3,"text":"x"}');
+    const second = p2.requests[1].messages;
+    const assistant = second.find(m => m.role === 'assistant')!;
+    expect(assistant.tool_calls).toHaveLength(2);
+    expect(second.filter(m => m.role === 'tool').map(m => m.tool_call_id)).toEqual(assistant.tool_calls!.map(c => c.id));
+    expect(f2).toEqual(['Fatto.']);
+    expect(l2.filter(l => l.startsWith('🕹️ tool:'))).toHaveLength(2);
   });
 
-  describe('constructor', () => {
-    it('should initialize with all required components', () => {
-      expect(executionEngine).toBeInstanceOf(ExecutionEngine);
-    });
+  it('puts URL, tabs and the live plan in the per-step [STATE] message', async () => {
+    const { engine, provider, cb } = setup(({ n }) =>
+      n === 1 ? [call('update_plan', { steps: [{ title: 'Apri fornitori', status: 'done' }, { title: 'Crea fornitore', status: 'doing' }] })] : [text('ok')]);
+    await engine.executePrompt('Crea fornitore', cb, [], true);
+    const state = lastText(provider.requests[1].messages);
+    expect(state).toContain('[STATO — passo 2 di 60]');
+    expect(state).toContain('Tab attivo: "Fornitori" — https://erp.example.com/fornitori (2 tab aperti)');
+    expect(state).toContain('✓ 1. Apri fornitori');
+    expect(state).toContain('→ 2. Crea fornitore');
   });
 
-  describe('executePrompt', () => {
-    let mockCallbacks: ExecutionCallbacks;
-
-    beforeEach(() => {
-      mockCallbacks = {
-        onLlmChunk: jest.fn(),
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-        onError: jest.fn(),
-        onToolStart: jest.fn(),
-        onToolEnd: jest.fn(),
-        onSegmentComplete: jest.fn(),
-        onFallbackStarted: jest.fn(),
-      };
-    });
-
-    it('should execute a simple prompt without tools', async () => {
-      // Mock provider to return simple text response
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Hello, this is a simple response.' };
-        yield { type: 'usage', inputTokens: 10, outputTokens: 8 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Hello', mockCallbacks, [], false);
-
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Hello, this is a simple response.');
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle tool calls in the response', async () => {
-      // Mock provider to return response with tool call
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'I\'ll take a screenshot for you.\n\n<tool>browser_screenshot</tool>\n<input>{}</input>\n<requires_approval>false</requires_approval>' };
-        yield { type: 'usage', inputTokens: 15, outputTokens: 25 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Take a screenshot', mockCallbacks, [], false);
-
-      expect(mockCallbacks.onToolOutput).toHaveBeenCalledWith('🕹️ tool: browser_screenshot | args: {}');
-      // The tool function is called with input and undefined context for non-approval tools
-      expect(mockToolFunctions[0]).toHaveBeenCalledWith('{}', undefined);
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle tool calls requiring approval', async () => {
-      // Mock provider to return response with tool call requiring approval
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'I\'ll click the purchase button.\n\n<tool>browser_click</tool>\n<input>button[data-action="purchase"]</input>\n<requires_approval>true</requires_approval>' };
-        yield { type: 'usage', inputTokens: 20, outputTokens: 30 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      // Mock chrome.tabs.query
-      (global as any).chrome.tabs.query.mockResolvedValue([{ id: 123 }]);
-
-      await executionEngine.executePrompt('Click the purchase button', mockCallbacks, [], false);
-
-      expect(mockCallbacks.onToolOutput).toHaveBeenCalledWith('🕹️ tool: browser_click | args: button[data-action="purchase"]');
-      expect(mockCallbacks.onToolOutput).toHaveBeenCalledWith('⚠️ This action requires approval: The AI assistant has determined this action requires your approval.');
-      expect(mockCallbacks.onToolOutput).toHaveBeenCalledWith('✅ Action approved by user. Executing...');
-      expect(mockToolFunctions[2]).toHaveBeenCalledWith('button[data-action="purchase"]', {
-        requiresApproval: true,
-        approvalReason: 'The AI assistant has determined this action requires your approval.',
-      });
-    });
-
-    it('should handle incomplete tool calls gracefully', async () => {
-      // Mock provider to return incomplete tool call
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'I\'ll take a screenshot.\n\n<tool>browser_screenshot</tool>\n<input>{}</input>' };
-        yield { type: 'usage', inputTokens: 15, outputTokens: 20 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Take a screenshot', mockCallbacks, [], false);
-
-      // The execution engine should continue and add a message about the incomplete tool call
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalled();
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle unknown tools gracefully', async () => {
-      // Mock provider to return response with unknown tool
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'I\'ll use an unknown tool.\n\n<tool>unknown_tool</tool>\n<input>test</input>\n<requires_approval>false</requires_approval>' };
-        yield { type: 'usage', inputTokens: 15, outputTokens: 20 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Use unknown tool', mockCallbacks, [], false);
-
-      // Should continue execution and provide error message about unknown tool
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalled();
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle execution cancellation', async () => {
-      // Mock provider to return a long response
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Starting long operation...' };
-        // Simulate cancellation during execution
-        errorHandler.cancel();
-        yield { type: 'text', text: 'This should not be processed' };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Long operation', mockCallbacks, [], false);
-
-      // Message is localized (default lang: it)
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('annullata'));
-    });
-
-    it('should handle streaming mode', async () => {
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Hello' };
-        yield { type: 'text', text: ' world' };
-        yield { type: 'text', text: '!' };
-        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePrompt('Hello', mockCallbacks, [], true);
-
-      expect(mockCallbacks.onLlmChunk).toHaveBeenCalledWith('Hello');
-      expect(mockCallbacks.onLlmChunk).toHaveBeenCalledWith(' world');
-      expect(mockCallbacks.onLlmChunk).toHaveBeenCalledWith('!');
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle initial messages correctly', async () => {
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Continuing conversation...' };
-        yield { type: 'usage', inputTokens: 20, outputTokens: 5 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      const initialMessages = [
-        { role: 'user', content: 'Previous message' },
-        { role: 'assistant', content: 'Previous response' },
-      ];
-
-      await executionEngine.executePrompt('Continue', mockCallbacks, initialMessages, false);
-
-      expect(mockProvider.createMessage).toHaveBeenCalledWith(
-        expect.any(String), // system prompt
-        expect.arrayContaining([
-          { role: 'user', content: 'Previous message' },
-          { role: 'assistant', content: 'Previous response' },
-          { role: 'user', content: 'Continue' },
-        ]),
-        expect.any(Array), // tools
-        undefined           // activeProfile (not set)
-      );
-    });
+  it('asks approval for risky clicks (decided by the extension) and stops the batch when rejected', async () => {
+    (requestApproval as jest.Mock).mockResolvedValue(false);
+    _setCurrentMap({ url: 'https://erp.example.com', entries: [{ ref: 2, role: 'button', label: 'Elimina tutto', candidates: [] }] });
+    const { engine, provider, tools, cb } = setup(({ n }) =>
+      n === 1 ? [call('browser_click_ref', { ref: 2 }), call('browser_read_text')] : [text('Non ho eliminato nulla.')]);
+    const result = await engine.executePrompt('Pulisci', cb, [], true);
+    expect(requestApproval).toHaveBeenCalledWith(expect.any(Number), 'browser_click_ref', expect.any(String), expect.stringContaining('Elimina tutto'));
+    expect(tools.find(t => t.name === 'browser_click_ref')!.func).not.toHaveBeenCalled();
+    expect(tools.find(t => t.name === 'browser_read_text')!.func).not.toHaveBeenCalled();
+    const results = provider.requests[1].messages.filter(m => m.role === 'tool').map(m => m.content as string);
+    expect(results[0]).toContain('rejected by the user');
+    expect(results[1]).toContain('rifiutato');
+    expect(result.outcome).toBe('success');
   });
 
-  describe('executePromptWithFallback', () => {
-    let mockCallbacks: ExecutionCallbacks;
-
-    beforeEach(() => {
-      mockCallbacks = {
-        onLlmChunk: jest.fn(),
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-        onError: jest.fn(),
-        onToolStart: jest.fn(),
-        onToolEnd: jest.fn(),
-        onSegmentComplete: jest.fn(),
-        onFallbackStarted: jest.fn(),
-      };
-
-      // Mock ErrorHandler methods
-      jest.spyOn(errorHandler, 'isStreamingSupported').mockResolvedValue(true);
-      jest.spyOn(errorHandler, 'isRetryableError').mockReturnValue(false);
-    });
-
-    it('should execute normally when no errors occur', async () => {
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Normal execution' };
-        yield { type: 'usage', inputTokens: 10, outputTokens: 5 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      await executionEngine.executePromptWithFallback('Test', mockCallbacks);
-
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Normal execution');
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-      expect(mockCallbacks.onFallbackStarted).not.toHaveBeenCalled();
-    });
-
-    it('should trigger fallback on streaming errors', async () => {
-      // Streaming attempts (with per-step retries) keep failing, non-streaming fallback succeeds
-      executionEngine.setStepRetryDelayMs(0);
-      jest.spyOn(errorHandler, 'isStreamingSupported').mockResolvedValue(true);
-
-      let streamingFailed = false;
-      let callCount = 0;
-      mockProvider.createMessage.mockImplementation(() => {
-        callCount++;
-        if (callCount <= 3) {
-          streamingFailed = true;
-          throw new Error('Streaming failed');
-        }
-        return (async function* () {
-          yield { type: 'text', text: 'Fallback execution' };
-          yield { type: 'usage', inputTokens: 10, outputTokens: 5 };
-        })();
-      });
-
-      await executionEngine.executePromptWithFallback('Test', mockCallbacks);
-
-      expect(streamingFailed).toBe(true);
-      expect(mockCallbacks.onFallbackStarted).toHaveBeenCalled();
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Fallback execution');
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
-
-    it('should handle retryable errors with backoff', async () => {
-      // Mock rate limit error
-      const rateLimitError = new Error('Rate limit exceeded');
-      (rateLimitError as any).status = 429;
-
-      // Mock ErrorHandler to recognize this as retryable
-      jest.spyOn(errorHandler, 'isRetryableError').mockReturnValue(true);
-      jest.spyOn(errorHandler, 'calculateBackoffTime').mockReturnValue(10);
-      executionEngine.setStepRetryDelayMs(0);
-
-      let callCount = 0;
-      mockProvider.createMessage.mockImplementation(() => {
-        callCount++;
-        if (callCount <= 3) {
-          throw rateLimitError;
-        }
-        return (async function* () {
-          yield { type: 'text', text: 'Retry successful' };
-          yield { type: 'usage', inputTokens: 10, outputTokens: 5 };
-        })();
-      });
-
-      await executionEngine.executePromptWithFallback('Test', mockCallbacks);
-
-      expect(mockCallbacks.onFallbackStarted).toHaveBeenCalled();
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Retry successful');
-      expect(mockCallbacks.onComplete).toHaveBeenCalled();
-    });
+  it('does not ask approval for a plain "Salva" in risky mode', async () => {
+    _setCurrentMap({ url: 'https://erp.example.com', entries: [{ ref: 1, role: 'button', label: 'Salva', candidates: [] }] });
+    const { engine, cb } = setup(({ n }) => (n === 1 ? [call('browser_click_ref', { ref: 1 })] : [text('ok')]));
+    await engine.executePrompt('Salva', cb, [], true);
+    expect(requestApproval).not.toHaveBeenCalled();
   });
 
-  describe('HTML entity decoding', () => {
-    it('should decode HTML entities in responses', async () => {
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Response with \\u003chtml\\u003e entities' };
-        yield { type: 'usage', inputTokens: 10, outputTokens: 8 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      const mockCallbacks: ExecutionCallbacks = {
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-      };
-
-      await executionEngine.executePrompt('Test', mockCallbacks, [], false);
-
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Response with <html> entities');
-    });
+  it('reports unknown tools with the list of available ones', async () => {
+    const { engine, provider, cb } = setup(({ n }) => (n === 1 ? [call('browser_teleport', {})] : [text('ok')]));
+    await engine.executePrompt('x', cb, [], true);
+    const res = provider.requests[1].messages.find(m => m.role === 'tool')!.content as string;
+    expect(res).toContain('tool "browser_teleport" does not exist');
+    expect(res).toContain('browser_observe');
   });
 
-  describe('Token tracking', () => {
-    it('should track token usage correctly', async () => {
-      const mockStream = (async function* () {
-        yield { type: 'text', text: 'Response' };
-        yield { type: 'usage', inputTokens: 15, outputTokens: 10, cacheReadTokens: 5 };
-      })();
-      mockProvider.createMessage.mockReturnValue(mockStream);
-
-      const mockCallbacks: ExecutionCallbacks = {
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-      };
-
-      await executionEngine.executePrompt('Test', mockCallbacks, [], false);
-
-      const { TokenTrackingService } = require('../../../src/tracking/tokenTrackingService');
-      const tokenTracker = TokenTrackingService.getInstance();
-      
-      expect(tokenTracker.trackInputTokens).toHaveBeenCalledWith(15, { read: 5, write: undefined });
-      expect(tokenTracker.trackOutputTokens).toHaveBeenCalledWith(10);
-    });
+  it('nudges after empty responses and fails after three in a row', async () => {
+    const { engine, provider, cb } = setup(() => []);
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(result.outcome).toBe('failure');
+    expect(provider.requests).toHaveLength(3);
+    expect(lastText(provider.requests[1].messages)).toContain('risposta precedente era vuota');
   });
 
-  describe('empty response handling', () => {
-    function makeCallbacks(): ExecutionCallbacks {
-      return {
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-      };
-    }
-
-    it('una risposta vuota NON termina il task: nudge e retry', async () => {
-      let call = 0;
-      mockProvider.createMessage.mockImplementation((_sys: any, messages: any[]) => (async function* () {
-        if (call++ === 0) {
-          // Il modello brucia tutto nel reasoning: nessun testo visibile
-          yield { type: 'reasoning', reasoning: 'sto pensando a lungo...' };
-        } else {
-          // Al retry (dopo il nudge) risponde normalmente
-          yield { type: 'text', text: 'Task completato: news inserita.' };
-        }
-        yield { type: 'usage', inputTokens: 10, outputTokens: 5 };
-      })());
-
-      const cb = makeCallbacks();
-      await executionEngine.executePrompt('Inserisci news', cb, [], false);
-
-      expect(call).toBe(2); // ha riprovato invece di fermarsi
-      expect(cb.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('Task completato'));
-      expect(executionEngine.getLastRunStats().outcome).toBe('success');
-      // Il nudge deve essere entrato nella history della seconda chiamata
-      const secondCallMessages = mockProvider.createMessage.mock.calls[1][1];
-      expect(JSON.stringify(secondCallMessages)).toContain('response was empty');
+  it('switches to the XML protocol when the endpoint rejects tools, and parses several XML calls', async () => {
+    const { engine, provider, tools, cb, log } = setup(({ tools: t, n }) => {
+      if (t.length) return [{ type: 'error', error: { message: 'tools unsupported', toolsUnsupported: true } }];
+      if (n === 2) return [text('Osservo\n<tool>browser_observe</tool>\n<input></input>\n<tool>browser_read_text</tool>\n<input></input>')];
+      return [text('Finito')];
     });
-
-    it('risposte vuote persistenti → outcome failure, mai finto successo', async () => {
-      mockProvider.createMessage.mockImplementation(() => (async function* () {
-        yield { type: 'reasoning', reasoning: 'solo reasoning' };
-      })());
-
-      const cb = makeCallbacks();
-      await executionEngine.executePrompt('Test', cb, [], false);
-
-      expect(executionEngine.getLastRunStats().outcome).toBe('failure');
-      expect(cb.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('risposte vuote'));
-    });
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(result.finalText).toBe('Finito');
+    expect(tools.find(t => t.name === 'browser_read_text')!.func).toHaveBeenCalled();
+    expect(log.some(l => l.includes('protocollo testuale'))).toBe(true);
+    // XML results are sent back as a user message, merged with the state
+    expect(lastText(provider.requests[2].messages)).toContain('Risultato di browser_observe:');
   });
 
-  describe('debug mode', () => {
-    function makeCallbacks(): ExecutionCallbacks & { onDebug: jest.Mock } {
-      return {
-        onLlmOutput: jest.fn(),
-        onToolOutput: jest.fn(),
-        onComplete: jest.fn(),
-        onDebug: jest.fn(),
-      };
-    }
+  it('uses the XML protocol from the start when the profile disables native tools', async () => {
+    const { engine, provider, cb } = setup(() => [text('ok')], { nativeToolCalling: false });
+    await engine.executePrompt('x', cb, [], true);
+    expect(provider.requests[0].tools).toEqual([]);
+    expect(provider.requests[0].system).toContain('<tool>nome_tool</tool>');
+  });
 
-    it('non emette debug quando la modalità è disattivata (default)', async () => {
-      mockProvider.createMessage.mockReturnValue((async function* () {
-        yield { type: 'reasoning', reasoning: 'sto pensando' };
-        yield { type: 'text', text: 'Risposta' };
-        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
-      })());
-      const cb = makeCallbacks();
+  it('reports malformed XML calls back to the model', async () => {
+    const { engine, provider, cb } = setup(({ n }) => (n === 1 ? [text('<tool>browser_observe <input>')] : [text('ok')]), { nativeToolCalling: false });
+    await engine.executePrompt('x', cb, [], true);
+    expect(lastText(provider.requests[1].messages)).toContain('Errore di formato');
+  });
 
-      await executionEngine.executePrompt('Test', cb, [], false);
+  it('retries transient LLM errors, then fails with a clear message', async () => {
+    const { engine, provider, cb, finals } = setup(() => [{ type: 'error', error: { message: 'LLM request failed (status 502)' } }]);
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(provider.requests).toHaveLength(3);
+    expect(result.outcome).toBe('failure');
+    expect(finals[0]).toContain('502');
+  });
 
-      expect(cb.onDebug).not.toHaveBeenCalled();
-    });
+  it('stops at maxSteps with the plan status', async () => {
+    const { engine, cb } = setup(() => [call('browser_read_text')]);
+    const result = await engine.executePrompt('x', cb, [], true, { maxSteps: 3, initialPlan: [{ title: 'Leggi', status: 'doing' }] });
+    expect(result.outcome).toBe('maxSteps');
+    expect(result.finalText).toContain('Mi sono fermato dopo 3 passi');
+    expect(result.finalText).toContain('Leggi [doing]');
+  });
 
-    it('con debug on emette la richiesta e la risposta grezza (incl. reasoning)', async () => {
-      executionEngine.setDebugMode(true);
-      mockProvider.createMessage.mockReturnValue((async function* () {
-        yield { type: 'reasoning', reasoning: 'ragionamento nascosto' };
-        yield { type: 'text', text: 'Risposta finale' };
-        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
-      })());
-      const cb = makeCallbacks();
+  it('stops repeated identical actions without progress (loop detection)', async () => {
+    const { engine, provider, cb } = setup(() => [call('browser_click_ref', { ref: 1 })]);
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(result.outcome).toBe('failure');
+    expect(provider.requests.length).toBe(5);
+    expect(lastText(provider.requests[3].messages)).toContain('Hai ripetuto browser_click_ref');
+  });
 
-      await executionEngine.executePrompt('Test', cb, [], false);
+  it('turns tool timeouts into errors instead of hanging', async () => {
+    const tools = fakeTools({ browser_read_text: () => new Promise(() => undefined) });
+    const { engine, provider, cb } = setup(({ n }) => (n === 1 ? [call('browser_read_text')] : [text('ok')]), { tools });
+    (engine as any).configManager = { getToolTimeoutMs: async () => 20, getNavigationTimeoutMs: async () => 20, getApprovalMode: async () => 'risky', getAdvancedToolsEnabled: async () => false };
+    await engine.executePrompt('x', cb, [], true);
+    expect(provider.requests[1].messages.find(m => m.role === 'tool')!.content).toContain('timed out');
+  });
 
-      const labels = cb.onDebug.mock.calls.map(c => c[0]);
-      expect(labels).toContain('→ LLM request');
-      expect(labels).toContain('← LLM raw response');
-      const rawCall = cb.onDebug.mock.calls.find(c => c[0] === '← LLM raw response')!;
-      expect(rawCall[1]).toContain('ragionamento nascosto');
-      expect(rawCall[1]).toContain('Risposta finale');
-    });
+  it('keeps only the latest observation of each kind in full', async () => {
+    const big = 'x'.repeat(9000);
+    const tools = fakeTools({ browser_read_text: async () => `testo ${big}` });
+    const { engine, provider, cb } = setup(({ n }) => (n <= 6 ? [call('browser_read_text')] : [text('ok')]), { tools, contextWindowSize: 16000 });
+    await engine.executePrompt('Leggi tutto', cb, [], true);
+    const last = provider.requests[provider.requests.length - 1].messages;
+    const toolMsgs = last.filter(m => m.role === 'tool').map(m => m.content as string);
+    expect(toolMsgs).toHaveLength(6);
+    expect(toolMsgs.slice(0, 5).every(t => t.startsWith('[Superseded by a newer observation] testo'))).toBe(true);
+    expect(toolMsgs[5]).toBe(`testo ${big}`);
+    expect(provider.summaries).toBe(0);
+  });
 
-    it('con debug on emette il risultato completo del tool', async () => {
-      executionEngine.setDebugMode(true);
-      let call = 0;
-      mockProvider.createMessage.mockImplementation(() => (async function* () {
-        if (call++ === 0) {
-          yield { type: 'text', text: '<tool>browser_click</tool><input>#btn</input><requires_approval>false</requires_approval>' };
-        } else {
-          yield { type: 'text', text: 'Fatto.' };
-        }
-        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
-      })());
-      mockToolFunctions[2].mockResolvedValue('Element clicked OK');
-      const cb = makeCallbacks();
+  it('summarizes the oldest turns when the context still exceeds the budget', async () => {
+    const big = JSON.stringify({ rows: 'y'.repeat(12000) });
+    const tools = fakeTools({ extract_with_schema: async () => big });
+    // Different hints: not a loop, just a long extraction task
+    const { engine, provider, cb } = setup(({ n }) => (n <= 7 ? [call('extract_with_schema', { schema: { type: 'object' }, hint: `pagina ${n}` })] : [text('ok')]), { tools, contextWindowSize: 16000 });
+    await engine.executePrompt('Estrai', cb, [], true);
+    expect(provider.summaries).toBeGreaterThan(0);
+    const last = provider.requests[provider.requests.length - 1].messages;
+    expect(lastText([last[0]])).toContain('[Riepilogo dei passi già svolti in questo task]');
+    expect(lastText([last[0]])).toContain('SUMMARY');
+    expect(last.filter(m => m.role === 'tool').length).toBeLessThanOrEqual(4);
+  });
 
-      await executionEngine.executePrompt('Click', cb, [], false);
+  it('honours cancellation', async () => {
+    const errorHandler = new ErrorHandler();
+    const { engine, cb } = setup(() => [call('browser_read_text')]);
+    (engine as any).errorHandler = errorHandler;
+    const tools = (engine as any).toolManager.getTools();
+    tools.find((t: any) => t.name === 'browser_read_text').func = jest.fn(async () => { errorHandler.cancel(); return 'testo'; });
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(result.outcome).toBe('cancelled');
+  });
 
-      const toolDebug = cb.onDebug.mock.calls.find(c => String(c[0]).includes('tool result'));
-      expect(toolDebug).toBeDefined();
-      expect(toolDebug![1]).toContain('Element clicked OK');
-    });
+  it('adds memory/procedure hints to the task and strips tool debris from previous tasks', async () => {
+    const { engine, provider, cb } = setup(() => [text('ok')]);
+    await engine.executePrompt('nuovo', cb, [
+      { role: 'user', content: 'vecchio' },
+      { role: 'assistant', content: '<tool>browser_observe</tool><input></input>' },
+      { role: 'assistant', content: 'risposta' },
+      { role: 'user', content: 'nuovo' },
+    ], true, { taskHints: ['Procedure salvate per questo sito: - "Crea fornitore"'] });
+    const msgs = provider.requests[0].messages;
+    expect(msgs.map(m => m.content)).toEqual(expect.arrayContaining(['vecchio', 'risposta']));
+    expect(JSON.stringify(msgs)).not.toContain('<tool>');
+    expect(msgs.find(m => typeof m.content === 'string' && m.content.startsWith('nuovo'))!.content).toContain('Crea fornitore');
   });
 });

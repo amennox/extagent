@@ -75,9 +75,6 @@ export function lookupMemories(page: Page) {
           taskDescription: memory.taskDescription,
           toolSequence: memory.toolSequence,
           validated: memory.validated ?? false,
-          // If present, the memory is deterministically replayable:
-          // call play_automation with this recordingName instead of redoing steps manually
-          recordingName: memory.recordingName,
           createdAt: memory.createdAt ? new Date(memory.createdAt).toISOString() : 'unknown'
         }));
 

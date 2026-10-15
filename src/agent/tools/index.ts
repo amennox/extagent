@@ -1,6 +1,6 @@
 import type { Page } from "playwright-crx";
 import { LLMProvider } from "../../models/providers/types";
-import { playAutomation } from "./automationTools";
+import { browserTab, browserWait, browserClickPoint } from "./coreTools";
 import { extractWithSchema, paginateAndCollect } from "./extractionTools";
 import { fillFormFromData } from "./formTools";
 
@@ -42,10 +42,10 @@ import {
   browserReadText, 
   browserScreenshot 
 } from "./observationTools";
-import { useSkill } from "./skillTools";
-import { browserInteractiveMap, browserClickRef, browserFillRef, browserSelectRef } from "./pageMapTools";
-import { browserWaitForStability } from "./stability";
+import { browserObserve, browserInteractiveMap, browserClickRef, browserFillRef, browserSelectRef, browserHoverRef, browserScroll } from "./pageMapTools";
+import { runProcedure } from "./procedureTools";
 import { smartExtract } from "./smartExtractTool";
+import { browserWaitForStability } from "./stability";
 import {
   browserGetActiveTab,
   browserNavigateTab,
@@ -65,7 +65,7 @@ import {
 import { ToolFactory } from "./types";
 
 // Re-export extraction, form, automation, and skill tools for direct use
-export { extractWithSchema, paginateAndCollect, fillFormFromData, playAutomation, useSkill, smartExtract };
+export { extractWithSchema, paginateAndCollect, fillFormFromData, runProcedure, smartExtract };
 
 // Export all tools
 export {
@@ -145,7 +145,7 @@ export function getAllTools(page: Page, llmProvider?: LLMProvider) {
     
     // Mouse tools
     browserMoveMouse(page),
-    browserClickXY(page),
+    browserClickPoint(page),
     browserDrag(page),
     
     // Keyboard tools
@@ -168,18 +168,20 @@ export function getAllTools(page: Page, llmProvider?: LLMProvider) {
     // Form tools
     fillFormFromData(page),
 
-    // Automation tools
-    playAutomation(page),
+    // Procedures (recorded/saved automations)
+    runProcedure(page, llmProvider),
 
-    // Skill tools
-    useSkill(page, llmProvider),
-
-    // Page perception (SPA-aware)
-    browserWaitForStability(page),
+    // Page perception and ref-based actions (core)
+    browserObserve(page),
     browserInteractiveMap(page),
     browserClickRef(page),
     browserFillRef(page),
     browserSelectRef(page),
+    browserHoverRef(page),
+    browserScroll(page),
+    browserTab(page),
+    browserWait(page),
+    browserWaitForStability(page),
   ];
 
   if (llmProvider) {

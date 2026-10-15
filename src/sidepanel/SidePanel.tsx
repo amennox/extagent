@@ -1,11 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ConfigManager } from '../background/configManager';
 import { useLang } from '../i18n';
+import type { Procedure } from '../procedures/types';
 import { TokenTrackingService } from '../tracking/tokenTrackingService';
 import { EmptyState, Button, IconButton } from '../ui';
 import { ApprovalRequest } from './components/ApprovalRequest';
 import { FeedbackChips } from './components/FeedbackChips';
 import { MessageDisplay } from './components/MessageDisplay';
+import { ProcedureBar, SaveTaskCard } from './components/ProcedureBar';
 import { PromptForm } from './components/PromptForm';
 import { QuickActions } from './components/QuickActions';
 import { SPHeader } from './components/SPHeader';
@@ -30,6 +32,8 @@ export function SidePanel() {
 
   const [currentAction, setCurrentAction] = useState<string>('');
   const [showFeedback, setShowFeedback] = useState(false);
+  const [canSaveProcedure, setCanSaveProcedure] = useState(false);
+  const [requestedProcedure, setRequestedProcedure] = useState<Procedure | null>(null);
 
   const pendingRef = useRef<string[]>([]);
 
@@ -181,15 +185,17 @@ export function SidePanel() {
       if (status === 'running') setIsProcessing(true);
       if (status === 'idle') setIsProcessing(false);
     },
-    onTaskOutcome: (outcome) => {
+    onTaskOutcome: (outcome, details) => {
       // Ask for feedback only on tasks that actually ran to an end state
       setShowFeedback(outcome === 'success' || outcome === 'failure');
+      setCanSaveProcedure(outcome === 'success' && details?.canSaveProcedure === true);
     },
   });
 
   const runPrompt = async (prompt: string) => {
     addTask(prompt);
     setShowFeedback(false);
+    setCanSaveProcedure(false);
     setIsProcessing(true);
     setTabStatus('running');
     setActiveTab('output');
@@ -221,18 +227,14 @@ export function SidePanel() {
     }
   }, [isProcessing]);
 
-  const handleSubmitRef = useRef(handleSubmit);
-  useEffect(() => { handleSubmitRef.current = handleSubmit; });
-
-  useEffect(() => {
-    const listener = (message: any) => {
-      if (message.action === 'executeSkillPrompt' && message.skillTitle) {
-        handleSubmitRef.current(`esegui la skill "${message.skillTitle}"`);
-      }
-    };
-    chrome.runtime.onMessage.addListener(listener);
-    return () => chrome.runtime.onMessage.removeListener(listener);
-  }, []);
+  const handleProcedureStarted = (procedure: Procedure) => {
+    setShowFeedback(false);
+    setCanSaveProcedure(false);
+    setIsProcessing(true);
+    setTabStatus('running');
+    setActiveTab('output');
+    setCurrentAction(procedure.name);
+  };
 
   const handleCancel = () => {
     pendingRef.current = [];
@@ -366,6 +368,9 @@ export function SidePanel() {
                 {showFeedback && !isProcessing && (
                   <FeedbackChips tabId={tabId} windowId={windowId} onDone={() => setShowFeedback(false)} />
                 )}
+                {canSaveProcedure && !isProcessing && (
+                  <SaveTaskCard tabId={tabId} windowId={windowId} onDone={() => setCanSaveProcedure(false)} />
+                )}
               </>
             ) : (
               <TaskHistory history={taskHistory} onRerun={handleSubmit} />
@@ -384,7 +389,14 @@ export function SidePanel() {
             />
           )}
 
-          <QuickActions executePrompt={executePrompt} isProcessing={isProcessing} />
+          <ProcedureBar
+            tabId={tabId}
+            isProcessing={isProcessing}
+            onRunStarted={handleProcedureStarted}
+            requested={requestedProcedure}
+            onRequestHandled={() => setRequestedProcedure(null)}
+          />
+          <QuickActions executePrompt={executePrompt} isProcessing={isProcessing} onRunProcedure={setRequestedProcedure} />
           <PromptForm
             onSubmit={handleSubmit}
             onCancel={handleCancel}

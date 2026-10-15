@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { createMockPage, mockChromeAPIs, mockScreenshotManager, mockPageContextManager } from '../../../mocks/playwright';
+import { createMockPage, mockChromeAPIs, mockPageContextManager } from '../../../mocks/playwright';
 import { 
   mockDOMSnapshots, 
   mockAccessibilityTrees, 
@@ -13,7 +13,10 @@ import {
 
 // Mock dependencies before importing the tools
 jest.mock('../../../../src/agent/PageContextManager', () => mockPageContextManager);
-jest.mock('../../../../src/tracking/screenshotManager', () => ({ ScreenshotManager: mockScreenshotManager }));
+jest.mock('../../../../src/agent/tools/pageMapTools', () => ({
+  buildMap: jest.fn().mockResolvedValue({ url: 'https://example.com', alerts: [], entries: [{ ref: 1, role: 'button', label: 'OK', candidates: ['#ok'], rect: { x: 1, y: 2, width: 30, height: 20 } }] }),
+  _setCurrentMap: jest.fn(),
+}));
 
 // Mock Chrome APIs
 global.chrome = mockChromeAPIs as any;
@@ -27,7 +30,6 @@ jest.mock('../../../../src/agent/tools/utils', () => ({
     return str.substring(0, maxLength) + `\n\n[Truncated ${str.length - maxLength} characters]`;
   }),
   MAX_RETURN_CHARS: 20000,
-  MAX_SCREENSHOT_CHARS: 500000,
 }));
 
 // Import the tools after mocking dependencies
@@ -366,105 +368,41 @@ describe('Observation Tools', () => {
   describe('browserScreenshot', () => {
     beforeEach(() => {
       mockPage.screenshot.mockResolvedValue(Buffer.from(mockScreenshotData.small, 'base64'));
-      mockPage.evaluate.mockResolvedValue({ width: 1024, height: 768 });
-      mockScreenshotManager.getInstance().storeScreenshot.mockReturnValue('screenshot-123');
+      mockPage.evaluate.mockResolvedValue(undefined);
+      mockPage.viewportSize = jest.fn().mockReturnValue({ width: 1024, height: 768 });
     });
 
-    it('should take viewport screenshot by default', async () => {
+    it('returns the image to the engine (vision) instead of an opaque reference', async () => {
       const tool = browserScreenshot(mockPage);
-
-      const result = await tool.func('');
-
-      expect(mockPage.screenshot).toHaveBeenCalledWith({
-        type: 'jpeg',
-        fullPage: false,
-        quality: 40
-      });
-      
-      const resultObj = JSON.parse(result);
-      expect(resultObj.type).toBe('screenshotRef');
-      expect(resultObj.id).toBe('screenshot-123');
-      expect(mockScreenshotManager.getInstance().storeScreenshot).toHaveBeenCalled();
+      const result: any = await tool.func('');
+      expect(mockPage.screenshot).toHaveBeenCalledWith(expect.objectContaining({ type: 'jpeg', fullPage: false, scale: 'css' }));
+      expect(result.image.mediaType).toBe('image/jpeg');
+      expect(result.image.data).toBe(Buffer.from(mockScreenshotData.small, 'base64').toString('base64'));
+      expect(result.text).toContain('Screenshot captured (viewport');
     });
 
-    it('should take full page screenshot when requested', async () => {
+    it('takes a full page screenshot when requested', async () => {
       const tool = browserScreenshot(mockPage);
-
-      const result = await tool.func('full');
-
-      expect(mockPage.screenshot).toHaveBeenCalledWith({
-        type: 'jpeg',
-        fullPage: true,
-        quality: 40
-      });
-
-      const resultObj = JSON.parse(result);
-      expect(resultObj.note).toContain('full page');
+      const result: any = await tool.func('full');
+      expect(mockPage.screenshot).toHaveBeenCalledWith(expect.objectContaining({ fullPage: true }));
+      expect(result.text).toContain('full page');
     });
 
-    it('should handle screenshot errors', async () => {
+    it('draws the element numbers (Set-of-Marks) when asked and removes them after', async () => {
+      const tool = browserScreenshot(mockPage);
+      const result: any = await tool.func('marks');
+      const calls = mockPage.evaluate.mock.calls;
+      // draw overlay, (viewport width), remove overlay
+      expect(calls[0][1]).toEqual(expect.objectContaining({ marks: [expect.objectContaining({ ref: 1 })] }));
+      expect(calls[calls.length - 1][1]).toBe('__dommotion_marks__');
+      expect(result.text).toContain('with element numbers');
+    });
+
+    it('reports screenshot errors as text', async () => {
       const tool = browserScreenshot(mockPage);
       mockPage.screenshot.mockRejectedValue(mockErrorScenarios.permissionDenied);
-
-      const result = await tool.func('');
-
-      expect(result).toContain('Error taking initial screenshot: Permission denied');
-    });
-
-    it('should handle page dimension errors', async () => {
-      const tool = browserScreenshot(mockPage);
-      mockPage.evaluate.mockRejectedValue(mockErrorScenarios.scriptError);
-
-      const result = await tool.func('');
-
-      expect(result).toContain('Error getting page dimensions: Script execution failed');
-    });
-
-    it('should handle large screenshots with downscaling', async () => {
-      const tool = browserScreenshot(mockPage);
-      // Mock a large screenshot that exceeds the limit
-      const largeScreenshot = 'x'.repeat(600000); // Exceeds MAX_SCREENSHOT_CHARS
-      mockPage.screenshot.mockResolvedValue(Buffer.from(largeScreenshot));
-      
-      // Mock the downscaling evaluate call
-      mockPage.evaluate
-        .mockResolvedValueOnce({ width: 1024, height: 768 }) // Page dimensions
-        .mockResolvedValueOnce({ // Downscaling result
-          base64: mockScreenshotData.small,
-          width: 800,
-          height: 600
-        });
-
-      const result = await tool.func('');
-
-      expect(mockPage.evaluate).toHaveBeenCalledTimes(2);
-      const resultObj = JSON.parse(result);
-      expect(resultObj.type).toBe('screenshotRef');
-    });
-
-    it('should handle downscaling errors', async () => {
-      const tool = browserScreenshot(mockPage);
-      const largeScreenshot = 'x'.repeat(600000);
-      mockPage.screenshot.mockResolvedValue(Buffer.from(largeScreenshot));
-      
-      mockPage.evaluate
-        .mockResolvedValueOnce({ width: 1024, height: 768 })
-        .mockResolvedValueOnce({ error: 'Canvas error' });
-
-      const result = await tool.func('');
-
-      expect(result).toContain('Error downscaling image: Canvas error');
-    });
-
-    it('should handle empty and whitespace input', async () => {
-      const tool = browserScreenshot(mockPage);
-
-      const result1 = await tool.func('');
-      const result2 = await tool.func('   ');
-
-      expect(mockPage.screenshot).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(result1).type).toBe('screenshotRef');
-      expect(JSON.parse(result2).type).toBe('screenshotRef');
+      const result: any = await tool.func('');
+      expect(result.text).toContain('Error taking screenshot: Permission denied');
     });
   });
 

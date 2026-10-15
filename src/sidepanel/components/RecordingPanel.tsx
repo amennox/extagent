@@ -1,208 +1,151 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Recording } from '../../background/recordingManager';
+import React, { useEffect, useState } from 'react';
 import { useLang } from '../../i18n';
+import type { Procedure } from '../../procedures/types';
 import { Button } from '../../ui';
-import { SkillWizard } from './SkillWizard';
 
 interface RecordingPanelProps {
   onClose: () => void;
+  onRun?: (procedure: Procedure) => void;
 }
 
-type PanelState = 'idle' | 'recording' | 'saving' | 'wizard';
+type PanelState = 'idle' | 'recording' | 'saved';
 
-export const RecordingPanel: React.FC<RecordingPanelProps> = ({ onClose }) => {
+/**
+ * Record a procedure by demonstration: start, act on the page, stop.
+ * The result is a procedure (steps with thumbnails) to review in the editor.
+ */
+export const RecordingPanel: React.FC<RecordingPanelProps> = ({ onClose, onRun }) => {
   const { t } = useLang();
-  const [panelState, setPanelState] = useState<PanelState>('idle');
-  const [stepCount, setStepCount] = useState(0);
+  const [state, setState] = useState<PanelState>('idle');
   const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [recordings, setRecordings] = useState<Recording[]>([]);
-  const [wizardRecording, setWizardRecording] = useState<Recording | null>(null);
-  const [toast, setToast] = useState('');
-
-  const loadRecordings = useCallback(async () => {
-    const result = await chrome.storage.local.get('recordings');
-    const all = (result.recordings as Record<string, Recording>) ?? {};
-    setRecordings(Object.values(all));
-  }, []);
+  const [count, setCount] = useState(0);
+  const [last, setLast] = useState('');
+  const [saved, setSaved] = useState<Procedure | null>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
-    loadRecordings();
+    // Restore an in-progress recording (panel reopened)
+    chrome.runtime.sendMessage({ action: 'getRecordingStatus' }, (res) => {
+      void chrome.runtime.lastError;
+      if (res?.active) {
+        setState('recording');
+        setName(res.name ?? '');
+        setCount(res.count ?? 0);
+      }
+    });
     const listener = (message: any) => {
-      if (message.action === 'recordingStepAdded') setStepCount(c => c + 1);
+      if (message.action === 'recordingStepAdded') {
+        if (typeof message.count === 'number') setCount(message.count);
+        if (message.description) setLast(String(message.description));
+      }
     };
     chrome.runtime.onMessage.addListener(listener);
     return () => chrome.runtime.onMessage.removeListener(listener);
-  }, [loadRecordings]);
+  }, []);
 
-  const handleStart = () => {
-    if (!name.trim()) return;
-    setStepCount(0);
-    chrome.runtime.sendMessage({ action: 'startRecordingCapture', name: name.trim() });
-    setPanelState('recording');
+  const start = () => {
+    setError('');
+    chrome.runtime.sendMessage({ action: 'startRecordingCapture', name: name.trim() }, (res) => {
+      void chrome.runtime.lastError;
+      if (!res?.success) {
+        setError(res?.error ?? 'Error');
+        return;
+      }
+      setName(res.name ?? name);
+      setCount(1);
+      setLast('');
+      setState('recording');
+    });
   };
 
-  const handleStop = () => {
-    chrome.runtime.sendMessage({ action: 'stopRecordingCapture' });
-    setPanelState('saving');
+  const stop = () => {
+    chrome.runtime.sendMessage({ action: 'stopRecordingCapture' }, (res) => {
+      void chrome.runtime.lastError;
+      if (res?.procedure) {
+        setSaved(res.procedure);
+        setState('saved');
+      } else {
+        setError(res?.error ?? t('rec.nothing'));
+        setState('idle');
+      }
+    });
   };
 
-  const handleSave = async () => {
-    const response = await chrome.runtime.sendMessage({ action: 'saveRecording', description: description.trim() });
-    setName(''); setDescription('');
-    await loadRecordings();
-    // Offer the skill wizard right after saving
-    if (response?.recording) {
-      setWizardRecording(response.recording as Recording);
-      setPanelState('wizard');
-    } else {
-      setPanelState('idle');
-    }
+  const cancel = () => {
+    chrome.runtime.sendMessage({ action: 'cancelRecording' }, () => void chrome.runtime.lastError);
+    setState('idle');
+    setCount(0);
   };
 
-  const handleCancel = () => {
-    chrome.runtime.sendMessage({ action: 'cancelRecording' });
-    setName(''); setDescription(''); setPanelState('idle');
+  const openEditor = (id: string) => {
+    chrome.runtime.sendMessage({ action: 'openProcedureEditor', procedureId: id }, () => void chrome.runtime.lastError);
   };
 
-  const handleDelete = async (recName: string) => {
-    await chrome.runtime.sendMessage({ action: 'deleteRecording', name: recName });
-    await loadRecordings();
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)',
+    borderRadius: 6, outline: 'none', background: 'var(--surface)', color: 'var(--text)',
+    fontFamily: 'inherit', boxSizing: 'border-box',
   };
-
-  const handlePlay = (recName: string) => {
-    chrome.runtime.sendMessage({ action: 'playRecording', name: recName });
-    onClose();
-  };
-
-  const handleExport = (rec: Recording) => {
-    const data = JSON.stringify(rec, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = `${rec.name.replace(/\s+/g, '-')}.json`; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const openWizard = (rec: Recording) => {
-    setWizardRecording(rec);
-    setPanelState('wizard');
-  };
-
-  const handleWizardCreated = async (skillTitle: string) => {
-    setWizardRecording(null);
-    setPanelState('idle');
-    setToast(`${t('wizard.created')}: ${skillTitle}`);
-    setTimeout(() => setToast(''), 4000);
-    await loadRecordings();
-  };
-
-  if (panelState === 'wizard' && wizardRecording) {
-    return (
-      <div className="ia-expand-in" style={{ padding: '0 14px 8px' }} data-testid="recording-panel">
-        <SkillWizard
-          recording={wizardRecording}
-          onClose={() => { setWizardRecording(null); setPanelState('idle'); }}
-          onCreated={handleWizardCreated}
-        />
-      </div>
-    );
-  }
 
   return (
     <div className="ia-expand-in" style={{ padding: '0 14px 8px' }} data-testid="recording-panel">
-      <div className="ia-card" style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {toast && (
-          <div style={{ fontSize: 11, color: 'var(--success)', fontWeight: 600 }} data-testid="wizard-toast">{toast}</div>
-        )}
-
-        {panelState === 'idle' && (
+      <div className="ia-card" style={{ padding: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {state === 'idle' && (
           <>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-              <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text)' }}>{t('recording.title')}</span>
-            </div>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text)' }}>{t('rec.title')}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>{t('rec.hint')}</span>
             <input
-              className="ia-card-sm"
-              placeholder={t('recording.namePlaceholder')}
+              style={inputStyle}
+              placeholder={t('rec.namePlaceholder')}
               value={name}
               onChange={(e) => setName(e.target.value)}
               data-testid="recording-name-input"
-              style={{
-                width: '100%', padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)',
-                borderRadius: 6, outline: 'none', background: 'var(--surface)', color: 'var(--text)',
-                fontFamily: 'inherit', boxSizing: 'border-box',
-              }}
             />
+            {error && <span style={{ fontSize: 11, color: 'var(--error)' }}>{error}</span>}
             <div style={{ display: 'flex', gap: 6 }}>
               <Button size="sm" variant="ghost" onClick={onClose}>✕</Button>
-              <Button size="sm" icon="Circle" variant="danger" fullWidth onClick={handleStart} disabled={!name.trim()} data-testid="btn-start-recording">
-                {t('recording.startRec')}
+              <Button size="sm" icon="Circle" variant="danger" fullWidth onClick={start} data-testid="btn-start-recording">
+                {t('rec.start')}
               </Button>
             </div>
           </>
         )}
 
-        {panelState === 'recording' && (
+        {state === 'recording' && (
           <>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, color: 'var(--error)' }}>
                 <span className="ia-dot-pulse" style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--error)', color: 'var(--error)' }} />
-                REC
+                REC · {name}
               </span>
-              <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }} data-testid="recording-status">{stepCount} {t('recording.steps')}</span>
+              <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }} data-testid="recording-status">{t('rec.steps', { n: String(count) })}</span>
             </div>
+            {last && (
+              <span style={{ fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {t('rec.last')}: {last}
+              </span>
+            )}
             <div style={{ display: 'flex', gap: 6 }}>
-              <Button size="sm" icon="Square" variant="outline" fullWidth onClick={handleStop} data-testid="btn-stop-recording">{t('recording.stopRec')}</Button>
-              <Button size="sm" icon="X" variant="ghost" fullWidth onClick={handleCancel}>{t('recording.cancel')}</Button>
+              <Button size="sm" icon="Square" variant="outline" fullWidth onClick={stop} data-testid="btn-stop-recording">{t('rec.stop')}</Button>
+              <Button size="sm" icon="X" variant="ghost" onClick={cancel}>{t('rec.cancel')}</Button>
             </div>
           </>
         )}
 
-        {panelState === 'saving' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }} data-testid="recording-save-form">
-            <input
-              placeholder={t('recording.descPlaceholder')}
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              data-testid="recording-desc-input"
-              style={{
-                width: '100%', padding: '6px 10px', fontSize: 12, border: '1px solid var(--border)',
-                borderRadius: 6, outline: 'none', background: 'var(--surface)', color: 'var(--text)',
-                fontFamily: 'inherit', boxSizing: 'border-box',
-              }}
-            />
+        {state === 'saved' && saved && (
+          <>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--success)' }} data-testid="recording-saved">
+              {t('rec.savedTitle', { name: saved.name })}
+            </span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+              {t('rec.savedDesc', { n: String(saved.steps.length) })}
+            </span>
             <div style={{ display: 'flex', gap: 6 }}>
-              <Button size="sm" icon="Save" fullWidth onClick={handleSave} data-testid="btn-save-recording">{t('recording.save')}</Button>
-              <Button size="sm" variant="ghost" fullWidth onClick={handleCancel} data-testid="btn-cancel-recording">{t('recording.cancel')}</Button>
+              <Button size="sm" icon="Pencil" fullWidth onClick={() => openEditor(saved.id)}>{t('proc.openEditor')}</Button>
+              {onRun && <Button size="sm" icon="Play" variant="outline" onClick={() => onRun(saved)}>{t('proc.runNow')}</Button>}
+              <Button size="sm" variant="ghost" onClick={() => { setSaved(null); setState('idle'); onClose(); }}>✕</Button>
             </div>
-          </div>
-        )}
-
-        {recordings.length > 0 && panelState !== 'recording' && (
-          <div data-testid="recording-list" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              {t('recording.saved')}
-            </div>
-            {recordings.map((rec) => (
-              <div
-                key={rec.name}
-                className="ia-row-hover"
-                data-testid={`recording-item-${rec.name}`}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '4px 6px',
-                  borderRadius: 6, fontSize: 11.5,
-                }}
-              >
-                <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text)' }}>
-                  {rec.name} ({rec.steps.length})
-                </span>
-                <button title={t('recording.play')} onClick={() => handlePlay(rec.name)} data-testid={`btn-play-${rec.name}`} style={{ background: 'transparent', border: 0, cursor: 'pointer', color: 'var(--primary)', padding: 2 }}>▶</button>
-                <button title={t('recording.createSkill')} onClick={() => openWizard(rec)} data-testid={`btn-skill-${rec.name}`} style={{ background: 'transparent', border: 0, cursor: 'pointer', color: 'var(--primary)', padding: 2 }}>✦</button>
-                <button title={t('recording.export')} onClick={() => handleExport(rec)} data-testid={`btn-export-${rec.name}`} style={{ background: 'transparent', border: 0, cursor: 'pointer', color: 'var(--text-muted)', padding: 2 }}>⬇</button>
-                <button title={t('recording.delete')} onClick={() => handleDelete(rec.name)} data-testid={`btn-delete-${rec.name}`} style={{ background: 'transparent', border: 0, cursor: 'pointer', color: 'var(--error)', padding: 2 }}>🗑</button>
-              </div>
-            ))}
-          </div>
+          </>
         )}
       </div>
     </div>

@@ -32,13 +32,18 @@ jobs:
       
     - name: Run TypeScript check
       run: npx tsc --noEmit
-      
-    - name: Run tests
-      run: npm test
-      
+
+    # The built extension is exercised by tests/e2e/extension.e2e.test.ts
     - name: Build extension
       run: npm run build
-      
+
+    # Real-browser tests (perception, procedures, engine, built extension)
+    - name: Install Chromium for end-to-end tests
+      run: npx playwright-core install --with-deps chromium
+
+    - name: Run tests
+      run: npm test
+
     - name: Upload build artifacts
       if: matrix.node-version == 20
       uses: actions/upload-artifact@v4

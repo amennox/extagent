@@ -20,7 +20,7 @@ export function OptionsSidebar({ active, onChange }: OptionsSidebarProps) {
     { id: 'general',   label: t('options.tabs.general'),  icon: 'Home' },
     { id: 'providers', label: t('options.tabs.llm'),      icon: 'Cpu' },
     { id: 'memory',    label: t('options.tabs.memory'),   icon: 'BrainCircuit' },
-    { id: 'skills',    label: t('options.tabs.skills'),   icon: 'Zap' },
+    { id: 'skills',    label: t('options.tabs.skills'),   icon: 'Workflow' },
     { id: 'profiles',  label: t('options.tabs.profiles'), icon: 'Globe' },
     { id: 'help',      label: t('options.tabs.help'),     icon: 'BookOpen' },
   ];
@@ -44,7 +44,7 @@ export function OptionsSidebar({ active, onChange }: OptionsSidebarProps) {
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
           <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: -0.3, color: 'var(--text)' }}>DomMotion</span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>v0.2.0</span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>v0.4.0</span>
         </div>
       </div>
 
@@ -75,7 +75,7 @@ export function OptionsSidebar({ active, onChange }: OptionsSidebarProps) {
 
       <div style={{ marginTop: 'auto', padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontFamily: 'var(--font-mono)' }}>
-          extension v0.2.0
+          extension v0.4.0
         </div>
       </div>
     </aside>

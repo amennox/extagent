@@ -1,5 +1,7 @@
+import { migrateLegacyAutomations } from '../procedures/migration';
 import { MemoryService } from '../tracking/memoryService';
 import { setupMessageListeners } from './messageHandler';
+import { resumeRecordingIfActive } from './recordingSession';
 import { cleanupOnUnload, setupTabListeners } from './tabManager';
 import { logWithTimestamp } from './utils';
 
@@ -20,6 +22,14 @@ function initializeExtension(): void {
 
   // Set up command listeners
   setupCommandListeners();
+
+  // Keep an in-progress recording alive across service-worker restarts
+  resumeRecordingIfActive().catch(() => undefined);
+
+  // One-time migration of legacy recordings/skills into procedures
+  migrateLegacyAutomations()
+    .then(n => { if (n > 0) logWithTimestamp(`Migrated ${n} legacy recordings/skills to procedures`); })
+    .catch(err => logWithTimestamp(`Procedure migration failed: ${err}`, 'warn'));
 }
 
 /**

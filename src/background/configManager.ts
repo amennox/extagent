@@ -1,6 +1,12 @@
+import type { ApprovalMode } from '../agent/approvalPolicy';
 import { OpenAICompatibleProvider } from '../models/providers/openai-compatible';
 import { AgentFunction, FunctionMapping, ModelProfile, migrateProfile } from '../models/providers/types';
 import { apiBaseCandidates, parseModelsResponse, DiscoveredModel } from '../models/providers/urlUtils';
+
+
+import { DEFAULT_MAX_STEPS, DEFAULT_NAVIGATION_TIMEOUT_MS, DEFAULT_TOOL_TIMEOUT_MS } from './defaults';
+
+export { DEFAULT_MAX_STEPS, DEFAULT_NAVIGATION_TIMEOUT_MS, DEFAULT_TOOL_TIMEOUT_MS };
 
 export interface ProviderConfig {
   provider: 'openai-compatible';
@@ -170,27 +176,56 @@ export class ConfigManager {
 
   // ── Tool Timeouts ─────────────────────────────────────────────────────────
 
+  // A stuck tool must not freeze the agent for minutes: 30s per tool, 60s for
+  // navigations (configurable). Extraction tools get a longer budget because
+  // they wait on an LLM call.
+
   async getToolTimeoutMs(): Promise<number> {
-    const result = await chrome.storage.sync.get({ toolTimeoutMs: 600_000 });
-    return result.toolTimeoutMs || 600_000;
+    const result = await chrome.storage.sync.get({ toolTimeoutMs: DEFAULT_TOOL_TIMEOUT_MS });
+    return result.toolTimeoutMs || DEFAULT_TOOL_TIMEOUT_MS;
   }
 
   async getNavigationTimeoutMs(): Promise<number> {
-    const result = await chrome.storage.sync.get({ navigationTimeoutMs: 600_000 });
-    return result.navigationTimeoutMs || 600_000;
+    const result = await chrome.storage.sync.get({ navigationTimeoutMs: DEFAULT_NAVIGATION_TIMEOUT_MS });
+    return result.navigationTimeoutMs || DEFAULT_NAVIGATION_TIMEOUT_MS;
+  }
+
+  // ── Approval mode ─────────────────────────────────────────────────────────
+
+  async getApprovalMode(): Promise<ApprovalMode> {
+    const result = await chrome.storage.sync.get({ approvalMode: 'risky' });
+    const v = result.approvalMode;
+    return v === 'strict' || v === 'off' ? v : 'risky';
+  }
+
+  async setApprovalMode(mode: ApprovalMode): Promise<void> {
+    await chrome.storage.sync.set({ approvalMode: mode });
+  }
+
+  // ── Advanced tools ────────────────────────────────────────────────────────
+  // Low-level tools (CSS selectors, DOM snapshots, mouse, memory CRUD) are
+  // hidden from the model by default to keep the tool list focused.
+
+  async getAdvancedToolsEnabled(): Promise<boolean> {
+    const result = await chrome.storage.sync.get({ advancedTools: false });
+    return result.advancedTools === true;
+  }
+
+  async setAdvancedToolsEnabled(enabled: boolean): Promise<void> {
+    await chrome.storage.sync.set({ advancedTools: enabled === true });
   }
 
   // ── Max Steps ─────────────────────────────────────────────────────────────
 
   async getMaxSteps(): Promise<number> {
-    const result = await chrome.storage.sync.get({ maxSteps: 200 });
+    const result = await chrome.storage.sync.get({ maxSteps: DEFAULT_MAX_STEPS });
     const n = Number(result.maxSteps);
-    return Number.isFinite(n) && n > 0 ? n : 200;
+    return Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_STEPS;
   }
 
   async setMaxSteps(steps: number): Promise<void> {
     const n = Number(steps);
-    await chrome.storage.sync.set({ maxSteps: Number.isFinite(n) && n > 0 ? n : 200 });
+    await chrome.storage.sync.set({ maxSteps: Number.isFinite(n) && n > 0 ? n : DEFAULT_MAX_STEPS });
   }
 
   // ── Planning ──────────────────────────────────────────────────────────────

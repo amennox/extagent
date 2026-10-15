@@ -1,0 +1,9 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Web components</title></head>
+<body>
+<x-card></x-card>
+<script>
+customElements.define('x-card', class extends HTMLElement{constructor(){super();const r=this.attachShadow({mode:'open'});
+r.innerHTML='<label for="n">Nome</label><input id="n"><button id="b">Invia richiesta</button><span id="out"></span>';
+r.getElementById('b').onclick=()=>{r.getElementById('out').textContent='Inviato '+r.getElementById('n').value;document.body.dataset.sent=r.getElementById('n').value;};}});
+</script>
+</body></html>

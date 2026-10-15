@@ -79,6 +79,23 @@ export function isContextOverflowError(error: unknown): boolean {
   return false;
 }
 
+/** The endpoint rejected the `tools`/`tool_choice` parameters. */
+export function isToolsUnsupportedError(error: unknown): boolean {
+  const e = error as any;
+  const status = e?.status ?? e?.statusCode ?? 0;
+  const msg = String(e?.message ?? e?.error?.message ?? '').toLowerCase();
+  if (status !== 400 && status !== 422 && status !== 500 && status !== 501) return false;
+  return /tool|function[_ ]call/.test(msg) && /(not support|unsupported|does not|not enabled|invalid|unknown|unrecognized|auto)/.test(msg);
+}
+
+function toOpenAIMessage(msg: any): any {
+  const out: any = { role: msg.role, content: msg.content ?? null };
+  if (msg.tool_calls?.length) out.tool_calls = msg.tool_calls;
+  if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
+  if (msg.name && msg.role === 'tool') out.name = msg.name;
+  return out;
+}
+
 export interface OpenAICompatibleModelInfo extends ModelInfo {
   isReasoning?: boolean;
 }
@@ -149,9 +166,11 @@ export class OpenAICompatibleProvider implements LLMProvider {
       !(message.role === "user" && typeof message.content === "string" && message.content.startsWith("[SYSTEM INSTRUCTION:"))
     );
 
+    // Pass OpenAI-shaped messages through untouched (tool_calls, tool_call_id,
+    // multimodal content parts). Only drop unknown keys.
     const openaiMessages = [
       { role: "system", content: systemPrompt },
-      ...filteredMessages.map(msg => ({ role: msg.role, content: msg.content })),
+      ...filteredMessages.map(toOpenAIMessage),
     ];
 
     const effectiveProfile = activeProfile ? migrateProfile(activeProfile) : null;
@@ -279,49 +298,44 @@ export class OpenAICompatibleProvider implements LLMProvider {
       // would read the empty answer as "no tool call → task done" and stop.
       if (!emittedText && accumulatedToolCalls.length === 0 && allReasoning) {
         const recovered = allReasoning.match(
-          /<tool>[\s\S]*?<\/tool>\s*<input>[\s\S]*?<\/input>\s*<requires_approval>[\s\S]*?<\/requires_approval>/
+          /(?:<tool>[\s\S]*?<\/tool>\s*<input>[\s\S]*?<\/input>(?:\s*<requires_approval>[\s\S]*?<\/requires_approval>)?\s*)+/
         );
-        if (recovered) yield { type: "text", text: recovered[0] };
+        if (recovered) yield { type: "text", text: recovered[0].trim() };
       }
 
-      // Convert accumulated OpenAI tool calls back to XML format expected by ExecutionEngine
-      if (accumulatedToolCalls.length > 0) {
-        console.log("🔍 Emitting accumulated tool calls:", JSON.stringify(accumulatedToolCalls));
-        for (const toolCall of accumulatedToolCalls) {
-          const fn = toolCall.function;
-          const toolName = fn?.name;
-          if (fn && toolName) {
-            let inputStr = fn.arguments || '';
-            try {
-              const parsed = JSON.parse(inputStr);
-              if (parsed !== null && typeof parsed === 'object' && typeof parsed.input === 'string') {
-                inputStr = parsed.input;
-              }
-            } catch {
-              // Not JSON — use raw arguments string as-is
-            }
-            const toolText = `<tool>${toolName}</tool><input>${inputStr}</input><requires_approval>false</requires_approval>`;
-            console.log("🔍 Converted tool call:", toolText);
-            yield { type: "text", text: toolText };
-          } else {
-            console.warn("🔍 Skipped tool call with missing name:", JSON.stringify(toolCall));
-          }
+      // Emit native tool calls as structured chunks (the engine executes them
+      // and answers with role:"tool" messages).
+      for (const toolCall of accumulatedToolCalls) {
+        const fn = toolCall.function;
+        if (fn?.name) {
+          yield {
+            type: "tool_call",
+            toolCall: {
+              id: toolCall.id || `call_${Math.random().toString(36).slice(2, 10)}`,
+              name: fn.name,
+              arguments: fn.arguments || '',
+            },
+          };
+        } else {
+          console.warn("Skipped tool call with missing name:", JSON.stringify(toolCall));
         }
       }
     } catch (error) {
       const status = (error as any)?.status ?? (error as any)?.statusCode ?? 'unknown';
-      console.error(
-        "🔍 LLM API Error:",
-        "status=", status,
-        "url=", this.options.baseUrl + '/chat/completions',
-        "model=", modelId,
-        error
-      );
-      if (status === 404) {
-        yield { type: "text", text: `Error: LLM endpoint returned 404. Check that Base URL is the API root (e.g. https://api-gb10.elettra.ai/v1), not the full /chat/completions path.` };
-      } else {
-        yield { type: "text", text: "Error: Failed to stream response from OpenAI-Compatible API. Please try again." };
-      }
+      const rawMessage = (error as any)?.message ? String((error as any).message) : String(error);
+      console.error("LLM API Error:", "status=", status, "url=", this.options.baseUrl + '/chat/completions', "model=", modelId, error);
+      const message = status === 404
+        ? `LLM endpoint returned 404. Check that Base URL is the API root (e.g. https://api.example.com/v1), not the full /chat/completions path.`
+        : `LLM request failed (status ${status}): ${rawMessage}`;
+      yield {
+        type: "error",
+        error: {
+          status,
+          message,
+          toolsUnsupported: mappedTools.length > 0 && isToolsUnsupportedError(error),
+          contextOverflow: isContextOverflowError(error),
+        },
+      };
     }
   }
 
@@ -337,6 +351,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
           maxTokens: defaultProfile.maxTokens ?? 4096,
           contextWindow: defaultProfile.contextWindowSize ?? 256000,
           isReasoning: !!migrateProfile(defaultProfile).reasoningEffort,
+          supportsImages: !!defaultProfile.supportsImages,
         },
       };
     }

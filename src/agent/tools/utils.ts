@@ -45,13 +45,13 @@ export async function getCurrentTabId(page: Page): Promise<number | undefined> {
 // Output size limits.
 // MAX_RETURN_CHARS is dynamic: it is derived from the active profile's context
 // window (see setMaxReturnChars, wired in ExecutionEngine.setActiveProfile).
-// Default assumes the 256k default context window (~10% → 25.6k tokens ≈ 100k chars).
-const DEFAULT_MAX_RETURN_CHARS = 100_000;
-const MIN_RETURN_CHARS = 20_000;
+// A single observation is capped at ~8k tokens: keeping every observation small
+// is what lets long tasks fit in the context without losing the thread.
+const DEFAULT_MAX_RETURN_CHARS = 32_000;
+const MIN_RETURN_CHARS = 8_000;
 export let MAX_RETURN_CHARS = DEFAULT_MAX_RETURN_CHARS;
-export const MAX_SCREENSHOT_CHARS = 500000;
 
-/** Set the observation char limit (floored at 20k). Pass undefined to restore the default. */
+/** Set the observation char limit (floored at 8k). Pass undefined to restore the default. */
 export function setMaxReturnChars(chars?: number): void {
   MAX_RETURN_CHARS = chars === undefined
     ? DEFAULT_MAX_RETURN_CHARS
@@ -70,33 +70,6 @@ export async function withActivePage<T>(
 ): Promise<T> {
   // Get the current active page from PageContextManager
   const activePage = getCurrentPage(page);
-  
-  // Add debugging logs
-  try {
-    let originalUrl = "unknown";
-    let activeUrl = "unknown";
-    
-    try {
-      originalUrl = await page.url();
-    } catch (e) {
-      // Ignore errors getting original URL
-    }
-    
-    try {
-      activeUrl = await activePage.url();
-    } catch (e) {
-      // Ignore errors getting active URL
-    }
-    
-    console.log(`withActivePage: Original page URL: ${originalUrl}`);
-    console.log(`withActivePage: Active page URL: ${activeUrl}`);
-    
-    if (originalUrl !== activeUrl) {
-      console.log(`withActivePage: Using different page from PageContextManager`);
-    }
-  } catch (error) {
-    console.log(`withActivePage: Error getting URLs for debugging: ${error instanceof Error ? error.message : String(error)}`);
-  }
   
   // Execute the function with the active page
   return await fn(activePage);

@@ -208,11 +208,19 @@ function ProfileEditorInline({ profile, onChange, onDone, onCancel, isNew, apiKe
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
           <Toggle
-            checked={profile.nativeToolCalling === true}
-            onChange={() => onChange('nativeToolCalling', !profile.nativeToolCalling)}
-            label={t('openai.profiles.nativeTools')}
+            checked={profile.nativeToolCalling !== false}
+            onChange={() => onChange('nativeToolCalling', profile.nativeToolCalling === false)}
+            label={t('profile.nativeTools')}
           />
-          <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{t('openai.profiles.nativeToolsHint')}</span>
+          <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{t('profile.nativeToolsDesc')}</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+          <Toggle
+            checked={profile.supportsImages === true}
+            onChange={() => onChange('supportsImages', !profile.supportsImages)}
+            label={t('profile.supportsImages')}
+          />
+          <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{t('profile.supportsImagesDesc')}</span>
         </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>

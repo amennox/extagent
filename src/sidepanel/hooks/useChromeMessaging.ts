@@ -25,7 +25,7 @@ interface UseChromeMessagingProps {
   onPageConsole?: (tabId: number, consoleInfo: any) => void;
   onPageError?: (tabId: number, error: string) => void;
   onAgentStatusUpdate?: (status: string, lastHeartbeat: number) => void;
-  onTaskOutcome?: (outcome: 'success' | 'failure' | 'cancelled' | 'maxSteps') => void;
+  onTaskOutcome?: (outcome: 'success' | 'failure' | 'cancelled' | 'maxSteps', details?: { canSaveProcedure?: boolean }) => void;
 }
 
 export const useChromeMessaging = ({
@@ -111,7 +111,7 @@ export const useChromeMessaging = ({
         onProcessingComplete();
       } else if (message.action === 'taskOutcome') {
         if (onTaskOutcome && message.content?.outcome) {
-          onTaskOutcome(message.content.outcome);
+          onTaskOutcome(message.content.outcome, { canSaveProcedure: message.content.canSaveProcedure === true });
         }
       } else if (message.action === 'requestApproval') {
         // Handle approval requests

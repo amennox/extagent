@@ -1,4 +1,4 @@
-import { ActionLog, setPendingRecordingName, consumePendingRecordingName } from '../../../src/tracking/actionLog';
+import { ActionLog } from '../../../src/tracking/actionLog';
 
 describe('ActionLog', () => {
   beforeEach(() => ActionLog.reset());
@@ -23,9 +23,5 @@ describe('ActionLog', () => {
     expect(ActionLog.size()).toBe(0);
   });
 
-  it('pendingRecordingName è one-shot', () => {
-    setPendingRecordingName('auto: test');
-    expect(consumePendingRecordingName()).toBe('auto: test');
-    expect(consumePendingRecordingName()).toBeNull();
-  });
+
 });

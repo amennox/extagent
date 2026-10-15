@@ -8,11 +8,13 @@ import { SmartPastePanel } from './SmartPastePanel';
 interface QuickActionsProps {
   executePrompt: (prompt: string) => Promise<void>;
   isProcessing: boolean;
+  /** Run a just-recorded procedure (opens its params form) */
+  onRunProcedure?: (procedure: import('../../procedures/types').Procedure) => void;
 }
 
 type OpenPanel = 'smartPaste' | 'smartExtract' | 'recording' | null;
 
-export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isProcessing }) => {
+export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isProcessing, onRunProcedure }) => {
   const { t } = useLang();
   const [openPanel, setOpenPanel] = useState<OpenPanel>(null);
   const { startSmartPaste, startSmartExtract } = useQuickActions({ executePrompt });
@@ -28,7 +30,12 @@ export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isPro
 
   return (
     <div data-testid="quick-actions" style={{ flex: '0 0 auto' }}>
-      {openPanel === 'recording' && <RecordingPanel onClose={() => setOpenPanel(null)} />}
+      {openPanel === 'recording' && (
+        <RecordingPanel
+          onClose={() => setOpenPanel(null)}
+          onRun={onRunProcedure ? (p) => { setOpenPanel(null); onRunProcedure(p); } : undefined}
+        />
+      )}
       {openPanel === 'smartPaste' && (
         <SmartPastePanel
           onSubmit={async (text) => { await startSmartPaste(text); setOpenPanel(null); }}

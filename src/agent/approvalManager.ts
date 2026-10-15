@@ -29,6 +29,8 @@ export function requiresApproval(toolName: string, toolInput: string): boolean {
   return false;
 }
 
+export const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+
 // Pending approvals map
 const pendingApprovals = new Map<string, {
   resolve: (approved: boolean) => void,
@@ -55,7 +57,15 @@ export async function requestApproval(
 ): Promise<boolean> {
   return new Promise((resolve) => {
     const requestId = generateUniqueId();
-    pendingApprovals.set(requestId, { resolve, toolName, toolInput, reason });
+    // Nobody answering (side panel closed) must not freeze the agent forever:
+    // an unanswered request counts as rejected.
+    const timer = setTimeout(() => {
+      if (pendingApprovals.has(requestId)) {
+        pendingApprovals.delete(requestId);
+        resolve(false);
+      }
+    }, APPROVAL_TIMEOUT_MS);
+    pendingApprovals.set(requestId, { resolve: (v: boolean) => { clearTimeout(timer); resolve(v); }, toolName, toolInput, reason });
     
     // Get the window ID if not provided
     if (!windowId) {

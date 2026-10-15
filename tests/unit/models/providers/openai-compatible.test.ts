@@ -1,8 +1,9 @@
-import { OpenAICompatibleProvider, OpenAICompatibleProviderOptions, isContextOverflowError, ThinkTagFilter, stripThinkTags } from '../../../../src/models/providers/openai-compatible';
+import { OpenAICompatibleProvider, OpenAICompatibleProviderOptions, isContextOverflowError, isToolsUnsupportedError, ThinkTagFilter, stripThinkTags } from '../../../../src/models/providers/openai-compatible';
 import { ModelProfile, migrateProfile } from '../../../../src/models/providers/types';
 
 let capturedRequestBody: any = null;
 let mockStreamChunks: any[] = [];
+let mockCreateError: any = null;
 
 jest.mock('openai', () => {
   const MockOpenAI = jest.fn().mockImplementation(() => ({
@@ -10,6 +11,7 @@ jest.mock('openai', () => {
       completions: {
         create: jest.fn().mockImplementation(async (body: any) => {
           capturedRequestBody = body;
+          if (mockCreateError) throw mockCreateError;
           const chunks = mockStreamChunks;
           return (async function* () {
             for (const c of chunks) yield c;
@@ -395,5 +397,75 @@ describe('isContextOverflowError', () => {
 
   it('ritorna false per errore generico senza status', () => {
     expect(isContextOverflowError(new Error('Network error'))).toBe(false);
+  });
+});
+
+
+describe('OpenAICompatibleProvider - native tool calls and errors', () => {
+  afterEach(() => { mockCreateError = null; });
+
+  it('emits accumulated native tool calls as structured chunks (not XML text)', async () => {
+    mockStreamChunks = [
+      { choices: [{ delta: { content: 'Compilo.' } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'browser_fill_ref', arguments: '{"ref":' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: ' 3, "text": "x"}' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 1, id: 'call_2', function: { name: 'browser_click_ref', arguments: '{"ref": 9}' } }] } }] },
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [{ name: 'browser_fill_ref', description: 'd', inputSchema: { type: 'object' } }], fastProfile));
+    const calls = chunks.filter(c => c.type === 'tool_call').map(c => c.toolCall);
+    expect(calls).toEqual([
+      { id: 'call_1', name: 'browser_fill_ref', arguments: '{"ref": 3, "text": "x"}' },
+      { id: 'call_2', name: 'browser_click_ref', arguments: '{"ref": 9}' },
+    ]);
+    expect(chunks.filter(c => c.type === 'text').map(c => c.text).join('')).toBe('Compilo.');
+    expect(capturedRequestBody.tool_choice).toBe('auto');
+  });
+
+  it('passes tool_calls, tool results and image parts through to the API', async () => {
+    mockStreamChunks = [];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [
+      { role: 'user', content: 'task' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'browser_observe', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'c1', name: 'browser_observe', content: 'obs' },
+      { role: 'user', content: [{ type: 'text', text: 'state' }, { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,AAA' } }] },
+    ], [], fastProfile));
+    const msgs = capturedRequestBody.messages;
+    expect(msgs[2].tool_calls[0].id).toBe('c1');
+    expect(msgs[3]).toEqual({ role: 'tool', content: 'obs', tool_call_id: 'c1', name: 'browser_observe' });
+    expect(msgs[4].content[1].image_url.url).toBe('data:image/jpeg;base64,AAA');
+  });
+
+  it('reports API failures as an error chunk (never as a fake final answer)', async () => {
+    mockCreateError = Object.assign(new Error('upstream exploded'), { status: 502 });
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    expect(chunks.filter(c => c.type === 'text')).toHaveLength(0);
+    expect(chunks[0]).toMatchObject({ type: 'error', error: { status: 502, toolsUnsupported: false } });
+    expect(chunks[0].error.message).toContain('upstream exploded');
+  });
+
+  it('flags endpoints that reject native tools', async () => {
+    mockCreateError = Object.assign(new Error('"auto" tool choice requires --enable-auto-tool-choice'), { status: 400 });
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [{ name: 't', description: 'd' }], fastProfile));
+    expect(chunks[0].error.toolsUnsupported).toBe(true);
+    expect(isToolsUnsupportedError({ status: 400, message: 'tools are not supported by this model' })).toBe(true);
+    expect(isToolsUnsupportedError({ status: 400, message: 'invalid temperature' })).toBe(false);
+  });
+
+  it('declares vision support from the profile', () => {
+    const provider = new OpenAICompatibleProvider({ ...baseOptions, profiles: [{ ...fastProfile, supportsImages: true }], defaultProfileId: 'fast' });
+    expect(provider.getModel().info.supportsImages).toBe(true);
+  });
+
+  it('recovers several XML calls from the reasoning channel (approval tag optional)', async () => {
+    mockStreamChunks = [
+      { choices: [{ delta: { reasoning_content: 'ok <tool>a</tool><input>1</input>\n<tool>b</tool><input>2</input>' } }] },
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    expect(chunks.filter(c => c.type === 'text').map(c => c.text).join('')).toBe('<tool>a</tool><input>1</input>\n<tool>b</tool><input>2</input>');
   });
 });

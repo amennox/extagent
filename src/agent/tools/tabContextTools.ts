@@ -1,5 +1,6 @@
 import type { Page } from "playwright-crx";
 import { getCurrentPage } from "../PageContextManager";
+import { captureScreenshot } from "./screenshot";
 import { ToolFactory } from "./types";
 import { getCurrentTabId } from "./utils";
 
@@ -165,46 +166,12 @@ export const browserScreenshotTab: ToolFactory = (page: Page) =>
         // Get the target page
         const targetPage = pages[tabIndex];
         
-        // Set screenshot options based on flags
         const fullPage = flags.includes("full");
-        const quality = 40; // Default quality
-        
-        // Import ScreenshotManager
-        const { ScreenshotManager } = await import("../../tracking/screenshotManager");
-        const screenshotManager = ScreenshotManager.getInstance();
-        
-        // Take the screenshot
-        const buffer = await targetPage.screenshot({ 
-          type: "jpeg", 
-          fullPage, 
-          quality 
-        });
-        
-        // Convert to base64
-        const base64 = buffer.toString("base64");
-        
-        // Create the screenshot data object
-        const screenshotData = {
-          type: "image",
-          source: {
-            type: "base64",
-            media_type: "image/jpeg",
-            data: base64
-          }
+        const image = await captureScreenshot(targetPage, { fullPage });
+        return {
+          text: `Screenshot captured of tab ${tabIndex} (${fullPage ? 'full page' : 'viewport only'})`,
+          image,
         };
-        
-        // Store the screenshot in the ScreenshotManager
-        const screenshotId = screenshotManager.storeScreenshot(screenshotData);
-        
-        // Log the screenshot storage
-        console.log(`Stored tab screenshot as ${screenshotId} (saved ${base64.length} characters)`);
-        
-        // Return a reference to the screenshot instead of the full data
-        return JSON.stringify({
-          type: "screenshotRef",
-          id: screenshotId,
-          note: `Screenshot captured of tab ${tabIndex} (${fullPage ? 'full page' : 'viewport only'})`
-        });
       } catch (err) {
         return `Error taking screenshot: ${
           err instanceof Error ? err.message : String(err)

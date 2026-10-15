@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Modale</title>
+<style>.backdrop{position:fixed;inset:0;background:rgba(0,0,0,.4)} .dlg{position:fixed;top:100px;left:100px;width:300px;height:150px;background:#fff;padding:10px}</style></head>
+<body>
+<button onclick="openD()">Elimina record</button>
+<a href="#x">Link sotto</a>
+<div id="d" hidden><div class="backdrop"></div><div class="dlg" role="dialog" aria-modal="true">
+ <p>Confermi?</p><button onclick="document.getElementById('d').hidden=true;document.body.dataset.deleted='1'">Conferma</button>
+ <button onclick="document.getElementById('d').hidden=true">Annulla</button></div></div>
+<script>function openD(){document.getElementById('d').hidden=false}</script>
+</body></html>

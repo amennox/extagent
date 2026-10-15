@@ -1,48 +1,54 @@
 import type { Page } from "playwright-crx";
 import { ActionLog } from "../../tracking/actionLog";
+import { observePage } from "./pageMapTools";
 import { settleAfterAction } from "./stability";
-import { ToolFactory } from "./types";
+import { ToolFactory, ToolOutput } from "./types";
 import { withActivePage, getCurrentTabId } from "./utils";
+
+export function normalizeUrl(raw: string): string {
+  const url = (raw ?? '').trim().replace(/^["']|["']$/g, '');
+  if (!url) return url;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(url)) return url;
+  return `https://${url}`;
+}
+
+function notifyNavigation(activePage: Page, url: string): void {
+  getCurrentTabId(activePage).then(async (tabId) => {
+    if (!tabId) return;
+    const title = await activePage.title().catch(() => '');
+    chrome.runtime.sendMessage({ action: 'tabTitleChanged', tabId, title });
+    chrome.runtime.sendMessage({ action: 'targetChanged', tabId, url });
+  }).catch(() => undefined);
+}
+
+async function withObservation(activePage: Page, detail: string): Promise<ToolOutput> {
+  try {
+    const obs = await observePage(activePage);
+    return { ...obs, text: `${detail}\n${obs.text}` };
+  } catch {
+    return { text: detail };
+  }
+}
 
 export const browserNavigate: ToolFactory = (page: Page) =>
   ({
     name: "browser_navigate",
     description:
-      "Navigate the browser to a specific URL. Input must be a full URL, e.g. https://example.com",
-    func: async (url: string) => {
+      "Navigate the browser to a URL and return the observation of the new page.",
+    func: async (input: string) => {
+      let url = input;
+      try {
+        const parsed = JSON.parse(input);
+        if (parsed && typeof parsed.url === 'string') url = parsed.url;
+      } catch { /* plain URL */ }
+      url = normalizeUrl(url);
       try {
         return await withActivePage(page, async (activePage) => {
-          // Navigate to the URL
-          await activePage.goto(url);
-          
-          // Get the tab ID and title after navigation
-          try {
-            const tabId = await getCurrentTabId(activePage);
-            const newTitle = await activePage.title();
-            
-            // Send a message to update the UI with the new tab title
-            if (tabId) {
-              chrome.runtime.sendMessage({
-                action: 'tabTitleChanged',
-                tabId: tabId,
-                title: newTitle
-              });
-              console.log(`Sent tabTitleChanged message for tab ${tabId} with title "${newTitle}" after navigation to ${url}`);
-              
-              // Also send a targetChanged message
-              chrome.runtime.sendMessage({
-                action: 'targetChanged',
-                tabId: tabId,
-                url: url
-              });
-            }
-          } catch (titleError) {
-            console.error("Error updating UI after navigation:", titleError);
-          }
-          
+          await activePage.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+          notifyNavigation(activePage, url);
           ActionLog.push({ type: 'navigate', url, description: `navigate to ${url}` });
           const settle = await settleAfterAction(activePage);
-          return `Successfully navigated to ${url} · ${settle}`;
+          return withObservation(activePage, `Navigated to ${activePage.url()} · ${settle}`);
         });
       } catch (error) {
         return `Error navigating to ${url}: ${
@@ -107,8 +113,9 @@ export const browserNavigateBack: ToolFactory = (page: Page) =>
     func: async () => {
       try {
         return await withActivePage(page, async (activePage) => {
-          await activePage.goBack();
-          return "Navigated back.";
+          await activePage.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 });
+          await settleAfterAction(activePage).catch(() => undefined);
+          return withObservation(activePage, `Navigated back to ${activePage.url()}`);
         });
       } catch (err) {
         return `Error going back: ${
@@ -125,8 +132,9 @@ export const browserNavigateForward: ToolFactory = (page: Page) =>
     func: async () => {
       try {
         return await withActivePage(page, async (activePage) => {
-          await activePage.goForward();
-          return "Navigated forward.";
+          await activePage.goForward({ waitUntil: 'domcontentloaded', timeout: 30000 });
+          await settleAfterAction(activePage).catch(() => undefined);
+          return withObservation(activePage, `Navigated forward to ${activePage.url()}`);
         });
       } catch (err) {
         return `Error going forward: ${

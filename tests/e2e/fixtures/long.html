@@ -1,0 +1,11 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Ordini</title></head>
+<body style="font-family:sans-serif">
+<h1>Ordini</h1>
+<ul id="list"></ul>
+<button id="more" onclick="document.getElementById('done').textContent='Caricati altri ordini'">Carica altri</button>
+<p id="done" role="status"></p>
+<script>
+const ul=document.getElementById('list');
+for(let i=1;i<=80;i++){const li=document.createElement('li');li.style.height='40px';li.innerHTML='Ordine '+i+' <a href="#o'+i+'">dettaglio</a>';ul.appendChild(li);}
+</script>
+</body></html>

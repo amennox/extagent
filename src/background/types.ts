@@ -201,49 +201,56 @@ export interface AgentStatusUpdateMessage {
   windowId?: number;
 }
 
-// Recording message types
+// Recording & procedure message types
 export interface StartRecordingCaptureMessage {
   action: 'startRecordingCapture';
-  name: string;
+  name?: string;
 }
 
 export interface StopRecordingCaptureMessage {
   action: 'stopRecordingCapture';
 }
 
-export interface SaveRecordingMessage {
-  action: 'saveRecording';
-  description?: string;
-}
-
 export interface CancelRecordingMessage {
   action: 'cancelRecording';
 }
 
-export interface DeleteRecordingMessage {
-  action: 'deleteRecording';
-  name: string;
+export interface GetRecordingStatusMessage {
+  action: 'getRecordingStatus';
 }
 
 export interface RecordingStepMessage {
   action: 'recordingStep';
-  step: {
-    type: string;
-    selector?: string;
-    text?: string;
-    url?: string;
-    description?: string;
-  };
+  step: Record<string, unknown> & { type: string };
+  rect?: { x: number; y: number; width: number; height: number };
+  dpr?: number;
 }
 
-export interface PlayRecordingMessage {
-  action: 'playRecording';
-  name: string;
+export interface RunProcedureMessage {
+  action: 'runProcedure';
+  procedureId: string;
+  params?: Record<string, string>;
+  tabId?: number;
+  startAt?: number;
+  endAt?: number;
+  mode?: 'direct' | 'test';
 }
 
-export interface ExecuteSkillPromptMessage {
-  action: 'executeSkillPrompt';
-  skillTitle: string;
+export interface SaveTaskAsProcedureMessage {
+  action: 'saveTaskAsProcedure';
+  windowId?: number;
+  tabId?: number;
+  name?: string;
+}
+
+export interface AnalyzeProcedureMessage {
+  action: 'analyzeProcedure';
+  procedureId: string;
+}
+
+export interface OpenProcedureEditorMessage {
+  action: 'openProcedureEditor';
+  procedureId?: string;
 }
 
 export type BackgroundMessage =
@@ -263,12 +270,13 @@ export type BackgroundMessage =
   | CheckAgentStatusMessage
   | StartRecordingCaptureMessage
   | StopRecordingCaptureMessage
-  | SaveRecordingMessage
   | CancelRecordingMessage
-  | DeleteRecordingMessage
+  | GetRecordingStatusMessage
   | RecordingStepMessage
-  | PlayRecordingMessage
-  | ExecuteSkillPromptMessage
+  | RunProcedureMessage
+  | SaveTaskAsProcedureMessage
+  | AnalyzeProcedureMessage
+  | OpenProcedureEditorMessage
   | TaskFeedbackMessage;
 
 export interface TaskFeedbackMessage {

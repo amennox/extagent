@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { ConfigManager } from '../../../background/configManager';
+import type { ApprovalMode } from '../../../agent/approvalPolicy';
+import { ConfigManager, DEFAULT_MAX_STEPS } from '../../../background/configManager';
 import { useLang, saveLang, Lang } from '../../../i18n';
 import { Chip, SegmentedControl, Button, Card, Toggle } from '../../../ui';
 import { Section } from '../Section';
@@ -9,7 +10,9 @@ export function GeneralTab() {
   const [customPrompt, setCustomPrompt] = useState('');
   const [promptSaved, setPromptSaved] = useState(false);
   const [tipsOpen, setTipsOpen] = useState(false);
-  const [maxSteps, setMaxSteps] = useState(200);
+  const [maxSteps, setMaxSteps] = useState(DEFAULT_MAX_STEPS);
+  const [approvalMode, setApprovalMode] = useState<ApprovalMode>('risky');
+  const [advancedTools, setAdvancedTools] = useState(false);
   const [maxStepsSaved, setMaxStepsSaved] = useState(false);
   const [debugMode, setDebugMode] = useState(false);
   const [planningEnabled, setPlanningEnabled] = useState(true);
@@ -19,7 +22,19 @@ export function GeneralTab() {
     ConfigManager.getInstance().getMaxSteps().then(n => setMaxSteps(n));
     ConfigManager.getInstance().getDebugMode().then(d => setDebugMode(d));
     ConfigManager.getInstance().getPlanningEnabled().then(p => setPlanningEnabled(p));
+    ConfigManager.getInstance().getApprovalMode().then(m => setApprovalMode(m));
+    ConfigManager.getInstance().getAdvancedToolsEnabled().then(a => setAdvancedTools(a));
   }, []);
+
+  const handleApprovalMode = async (m: ApprovalMode) => {
+    setApprovalMode(m);
+    await ConfigManager.getInstance().setApprovalMode(m);
+  };
+
+  const handleAdvancedTools = async (v: boolean) => {
+    setAdvancedTools(v);
+    await ConfigManager.getInstance().setAdvancedToolsEnabled(v);
+  };
 
   const handleToggleDebug = async (v: boolean) => {
     setDebugMode(v);
@@ -51,8 +66,8 @@ export function GeneralTab() {
   };
 
   const handleResetMaxSteps = async () => {
-    setMaxSteps(200);
-    await ConfigManager.getInstance().setMaxSteps(200);
+    setMaxSteps(DEFAULT_MAX_STEPS);
+    await ConfigManager.getInstance().setMaxSteps(DEFAULT_MAX_STEPS);
     setMaxStepsSaved(true);
     setTimeout(() => setMaxStepsSaved(false), 2000);
   };
@@ -157,6 +172,23 @@ export function GeneralTab() {
             </Button>
           </div>
         </Card>
+      </Section>
+
+      <Section title={t('settings.approval')} description={t('settings.approvalDesc')}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="approval-mode">
+          {(['risky', 'strict', 'off'] as ApprovalMode[]).map(m => (
+            <label key={m} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: 'var(--text)', cursor: 'pointer' }}>
+              <input type="radio" name="approvalMode" checked={approvalMode === m} onChange={() => handleApprovalMode(m)} />
+              {t(`settings.approval.${m}`)}
+            </label>
+          ))}
+        </div>
+      </Section>
+
+      <Section title={t('settings.advancedTools')} description={t('settings.advancedToolsDesc')}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <Toggle checked={advancedTools} onChange={handleAdvancedTools} label={t('settings.advancedTools')} />
+        </div>
       </Section>
 
       <Section title={t('general.planning.title')} description={t('general.planning.desc')}>

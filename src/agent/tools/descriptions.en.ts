@@ -32,8 +32,6 @@ export const TOOL_DESCRIPTIONS_EN: Record<string, string> = {
   extract_with_schema: "Extract structured data from the page as JSON conforming to the given schema. Input: JSON {schema, hint?, useAccessibilityTree?}.",
   paginate_and_collect: "Collect data across multiple pages using extract_with_schema. Input: JSON {schema, nextButtonSelector?, nextButtonText?, maxPages?, deduplicateField?}.",
   fill_form_from_data: "Fill form fields from a structured data payload. Does NOT submit. Input: JSON {data: {field: value}, submitSelector?}.",
-  play_automation: "Replay a recording deterministically (saved selectors). Supports {{param}} and {{today}}. On failure returns failedStep and recovery. Input: JSON {recordingName, params?, instruction?}.",
-  use_skill: "Execute a saved skill by title: deterministic steps (navigate, play, extract, paginate, fill, compute, export) with {{param}} substitution. Input: JSON {skillTitle, params?}.",
   browser_interactive_map: "NUMBERED map of visible interactive elements (buttons, links, fields) with role, label, value and state. Use it as the primary observation and act on the numbers.",
   browser_click_ref: "Click an element by number from the interactive map. Input: the number (e.g. 12). The result includes the page changes.",
   browser_fill_ref: "Fill a field by number from the interactive map. Input: \"number|text\" (e.g. 7|Rossi SRL). Dispatches native events (React/Vue safe).",

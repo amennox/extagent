@@ -1,10 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { MemoryManager, Memory } from '../../agent/MemoryManager';
+import { AgentMemory, MemoryService } from '../../tracking/memoryService';
 import { Button, Chip, IconButton, LucideIcon, EmptyState } from '../../ui';
 import { Section } from './Section';
 
-function formatDate(iso: string): string {
-  const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+function formatDate(ts: number): string {
+  const days = Math.floor((Date.now() - ts) / 86400000);
   if (days === 0) return 'oggi';
   if (days === 1) return 'ieri';
   if (days < 7) return `${days} giorni fa`;
@@ -13,46 +13,41 @@ function formatDate(iso: string): string {
 }
 
 export function MemoryManagement() {
-  const [agentMemories, setAgentMemories] = useState<Memory[]>([]);
+  const [agentMemories, setAgentMemories] = useState<AgentMemory[]>([]);
   const [importStatus, setImportStatus] = useState('');
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [editText, setEditText] = useState('');
   const agentImportRef = useRef<HTMLInputElement>(null);
+  const service = MemoryService.getInstance();
 
   const load = async () => {
-    const manager = new MemoryManager([]);
-    const all: Memory[] = JSON.parse(await manager.exportMemories() || '[]');
-    setAgentMemories(all);
+    setAgentMemories(await service.getAllMemories());
   };
 
   useEffect(() => { load(); }, []);
 
-  const handleValidate = async (id: string) => {
-    const manager = new MemoryManager([]);
-    await manager.markValidated(id);
+  const handleValidate = async (id: number) => {
+    await service.setValidated(id, true);
     await load();
   };
 
-  const handleDelete = async (id: string) => {
-    const manager = new MemoryManager([]);
-    await manager.deleteMemory(id);
+  const handleDelete = async (id: number) => {
+    await service.deleteMemory(id);
     await load();
   };
 
-  const openEdit = (m: Memory) => { setEditingId(m.id); setEditText(m.pattern); };
+  const openEdit = (m: AgentMemory) => { setEditingId(m.id ?? null); setEditText(m.taskDescription); };
   const cancelEdit = () => { setEditingId(null); setEditText(''); };
 
   const handleSaveEdit = async () => {
-    if (!editingId) return;
-    const manager = new MemoryManager([]);
-    await manager.updateMemoryPattern(editingId, editText);
+    if (editingId === null) return;
+    await service.updateTaskDescription(editingId, editText);
     cancelEdit();
     await load();
   };
 
   const handleExport = async () => {
-    const manager = new MemoryManager([]);
-    const json = await manager.exportMemories();
+    const json = await service.exportJson();
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -68,8 +63,7 @@ export function MemoryManagement() {
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
-        const manager = new MemoryManager([]);
-        const count = await manager.importMemories(ev.target?.result as string);
+        const count = await service.importJson(ev.target?.result as string);
         await load();
         setImportStatus(`${count} memorie importate`);
         setTimeout(() => setImportStatus(''), 3000);
@@ -138,7 +132,7 @@ export function MemoryManagement() {
                   <div style={{
                     fontSize: 12.5, color: 'var(--text)',
                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>{m.pattern}</div>
+                  }}>{m.taskDescription}</div>
                   <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 2 }}>
                     {m.domain} · {formatDate(m.createdAt)} · {m.validated ? 'validata' : 'pending'}
                   </div>
@@ -146,10 +140,10 @@ export function MemoryManagement() {
                 {!m.validated && <Chip size="xs" tone="warning">da validare</Chip>}
                 <div style={{ display: 'flex', gap: 2 }}>
                   {!m.validated && (
-                    <IconButton icon="Check" size="sm" title="Valida" onClick={() => handleValidate(m.id)} data-testid={`btn-validate-${m.id}`} />
+                    <IconButton icon="Check" size="sm" title="Valida" onClick={() => handleValidate(m.id!)} data-testid={`btn-validate-${m.id}`} />
                   )}
                   <IconButton icon="Pencil" size="sm" title="Modifica" onClick={() => openEdit(m)} data-testid={`btn-edit-memory-${m.id}`} />
-                  <IconButton icon="Trash2" size="sm" title="Elimina" danger onClick={() => handleDelete(m.id)} data-testid={`btn-delete-memory-${m.id}`} />
+                  <IconButton icon="Trash2" size="sm" title="Elimina" danger onClick={() => handleDelete(m.id!)} data-testid={`btn-delete-memory-${m.id}`} />
                 </div>
               </div>
 

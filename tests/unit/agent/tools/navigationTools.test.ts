@@ -17,8 +17,20 @@ jest.mock('../../../../src/agent/tools/utils', () => ({
   getCurrentTabId: jest.fn().mockResolvedValue(123),
 }));
 
+jest.mock('../../../../src/agent/tools/pageMapTools', () => ({
+  observePage: jest.fn().mockResolvedValue({ text: 'Interactive elements (act with the [number]):\n[1] button "OK"' }),
+}));
+
+jest.mock('../../../../src/agent/tools/stability', () => ({
+  settleAfterAction: jest.fn().mockResolvedValue('stable after 100ms'),
+}));
+
+const text = (r: any): string => (typeof r === 'string' ? r : r.text);
+const flush = () => new Promise(r => setTimeout(r, 0));
+
 // Import the tools after mocking dependencies
 import {
+  normalizeUrl,
   browserNavigate,
   browserWaitForNavigation,
   browserNavigateBack,
@@ -43,8 +55,19 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('https://example.com');
 
-      expect(result).toContain('Successfully navigated to https://example.com');
-      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com');
+      expect(text(result)).toContain('Navigated to');
+      expect(text(result)).toContain('Interactive elements');
+      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    });
+
+    it('adds https:// to bare domains and accepts JSON input', async () => {
+      const tool = browserNavigate(mockPage);
+      mockPage.goto.mockResolvedValue(undefined);
+      await tool.func('example.com/path');
+      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/path', expect.any(Object));
+      await tool.func('{"url": "http://intranet.local"}');
+      expect(mockPage.goto).toHaveBeenCalledWith('http://intranet.local', expect.any(Object));
+      expect(normalizeUrl(' "https://x.y" ')).toBe('https://x.y');
     });
 
     it('should send Chrome messages after successful navigation', async () => {
@@ -53,6 +76,7 @@ describe('Navigation Tools', () => {
       mockPage.title.mockResolvedValue('Example Domain');
 
       await tool.func('https://example.com');
+      await flush();
 
       expect(mockChromeAPIs.runtime.sendMessage).toHaveBeenCalledWith({
         action: 'tabTitleChanged',
@@ -74,15 +98,15 @@ describe('Navigation Tools', () => {
 
       // Test HTTPS URL
       await tool.func('https://secure.example.com');
-      expect(mockPage.goto).toHaveBeenCalledWith('https://secure.example.com');
+      expect(mockPage.goto).toHaveBeenCalledWith('https://secure.example.com', expect.any(Object));
 
       // Test HTTP URL
       await tool.func('http://example.com');
-      expect(mockPage.goto).toHaveBeenCalledWith('http://example.com');
+      expect(mockPage.goto).toHaveBeenCalledWith('http://example.com', expect.any(Object));
 
       // Test URL with path and query
       await tool.func('https://example.com/path?query=value');
-      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/path?query=value');
+      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com/path?query=value', expect.any(Object));
     });
 
     it('should handle navigation errors gracefully', async () => {
@@ -103,8 +127,8 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('https://example.com');
 
-      expect(result).toContain('Successfully navigated to https://example.com');
-      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com');
+      expect(text(result)).toContain('Navigated to');
+      expect(mockPage.goto).toHaveBeenCalledWith('https://example.com', expect.any(Object));
     });
 
     it('should handle missing tab ID gracefully', async () => {
@@ -114,8 +138,9 @@ describe('Navigation Tools', () => {
       utilsMock.getCurrentTabId.mockResolvedValue(undefined);
 
       const result = await tool.func('https://example.com');
+      await flush();
 
-      expect(result).toContain('Successfully navigated to https://example.com');
+      expect(text(result)).toContain('Navigated to');
       expect(mockChromeAPIs.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
@@ -254,7 +279,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('');
 
-      expect(result).toBe('Navigated back.');
+      expect(text(result)).toContain('Navigated back');
       expect(mockPage.goBack).toHaveBeenCalled();
     });
 
@@ -274,7 +299,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('ignored input');
 
-      expect(result).toBe('Navigated back.');
+      expect(text(result)).toContain('Navigated back');
       expect(mockPage.goBack).toHaveBeenCalled();
     });
 
@@ -295,7 +320,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('');
 
-      expect(result).toBe('Navigated forward.');
+      expect(text(result)).toContain('Navigated forward');
       expect(mockPage.goForward).toHaveBeenCalled();
     });
 
@@ -315,7 +340,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('ignored input');
 
-      expect(result).toBe('Navigated forward.');
+      expect(text(result)).toContain('Navigated forward');
       expect(mockPage.goForward).toHaveBeenCalled();
     });
 
@@ -342,7 +367,7 @@ describe('Navigation Tools', () => {
 
       // Navigate to a page
       const navigateResult = await navigateTool.func('https://example.com');
-      expect(navigateResult).toContain('Successfully navigated to https://example.com');
+      expect(text(navigateResult)).toContain('Navigated to');
 
       // Wait for navigation to complete
       const waitResult = await waitTool.func('load');
@@ -350,7 +375,7 @@ describe('Navigation Tools', () => {
 
       // Navigate back
       const backResult = await backTool.func('');
-      expect(backResult).toBe('Navigated back.');
+      expect(text(backResult)).toContain('Navigated back');
     });
 
     it('should work with all withActivePage calls', async () => {

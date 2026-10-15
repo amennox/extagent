@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLang } from '../../i18n';
 import { FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { OptionsSidebar } from './OptionsSidebar';
@@ -7,8 +7,8 @@ import { DomainProfilesTab } from './tabs/DomainProfilesTab';
 import { GeneralTab } from './tabs/GeneralTab';
 import { HelpTab } from './tabs/HelpTab';
 import { MemoryTab } from './tabs/MemoryTab';
+import { ProceduresTab } from './tabs/ProceduresTab';
 import { ProvidersTab } from './tabs/ProvidersTab';
-import { SkillsTab } from './tabs/SkillsTab';
 
 interface VerticalTabsProps {
   openaiCompatibleApiKey: string;
@@ -29,8 +29,15 @@ interface VerticalTabsProps {
 }
 
 export function VerticalTabs(props: VerticalTabsProps) {
-  const [activeTab, setActiveTab] = useState('general');
+  // Deep link from the side panel: options.html#procedures/<id>
+  const [activeTab, setActiveTab] = useState(() => (window.location.hash.startsWith('#procedures') ? 'skills' : 'general'));
   const { t } = useLang();
+
+  useEffect(() => {
+    const onHash = () => { if (window.location.hash.startsWith('#procedures')) setActiveTab('skills'); };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   const titles: Record<string, { title: string; subtitle: string }> = {
     general:   { title: t('options.tabs.general'),  subtitle: t('options.subtitles.general') },
@@ -68,7 +75,7 @@ export function VerticalTabs(props: VerticalTabsProps) {
       case 'memory':
         return <MemoryTab />;
       case 'skills':
-        return <SkillsTab />;
+        return <ProceduresTab />;
       case 'profiles':
         return <DomainProfilesTab />;
       case 'help':

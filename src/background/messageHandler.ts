@@ -1,10 +1,11 @@
 import { handleApprovalResponse } from '../agent/approvalManager';
 import { TokenTrackingService } from '../tracking/tokenTrackingService';
-import { executePrompt, applyTaskFeedback } from './agentController';
+import { executePrompt, applyTaskFeedback, saveLastTaskAsProcedure } from './agentController';
 import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
-import { RecordingManager } from './recordingManager';
+import { analyzeProcedure, runProcedureDirect } from './procedureController';
+import { addCapturedStep, cancelRecording, getRecordingStatus, startRecording, stopRecording } from './recordingSession';
 import { triggerReflection } from './reflectionController';
 import { attachToTab, getTabState, getWindowForTab, forceResetPlaywright } from './tabManager';
 import { BackgroundMessage } from './types';
@@ -119,51 +120,57 @@ export function handleMessage(
         return true; // Keep the message channel open for async response
 
       case 'startRecordingCapture':
-        handleStartRecordingCapture(message, sendResponse)
-          .catch(error => {
-            sendResponse({ success: false, error: handleError(error, 'starting recording') });
-          });
+        respondAsync(sendResponse, 'starting recording', async () => {
+          const active = await startRecording(message.name);
+          return { name: active.name };
+        });
         return true;
 
       case 'stopRecordingCapture':
-        handleStopRecordingCapture(message, sendResponse);
-        return true;
-
-      case 'saveRecording':
-        handleSaveRecording(message, sendResponse)
-          .catch(error => {
-            sendResponse({ success: false, error: handleError(error, 'saving recording') });
-          });
+        respondAsync(sendResponse, 'stopping recording', async () => ({ procedure: await stopRecording() }));
         return true;
 
       case 'cancelRecording':
-        handleCancelRecording(message, sendResponse)
-          .catch(error => {
-            sendResponse({ success: false, error: handleError(error, 'cancelling recording') });
-          });
+        respondAsync(sendResponse, 'cancelling recording', async () => { await cancelRecording(); return {}; });
         return true;
 
-      case 'deleteRecording':
-        handleDeleteRecording(message, sendResponse)
-          .catch(error => {
-            sendResponse({ success: false, error: handleError(error, 'deleting recording') });
-          });
+      case 'getRecordingStatus':
+        respondAsync(sendResponse, 'recording status', async () => getRecordingStatus());
         return true;
 
       case 'recordingStep':
-        handleRecordingStep(message, sendResponse)
-          .catch(error => {
-            sendResponse({ success: false, error: handleError(error, 'adding recording step') });
-          });
+        respondAsync(sendResponse, 'adding recording step', async () => {
+          await addCapturedStep(message as any, sender);
+          return {};
+        });
         return true;
 
-      case 'playRecording':
-        sendResponse({ success: true });
+      case 'runProcedure':
+        respondAsync(sendResponse, 'running procedure', async () => {
+          const result = await runProcedureDirect(message);
+          return 'error' in result ? { success: false, error: result.error } : { report: result };
+        });
         return true;
 
-      case 'executeSkillPrompt':
-        // Re-broadcast so the sidepanel can pick it up and call handleSubmit
-        chrome.runtime.sendMessage({ action: 'executeSkillPrompt', skillTitle: message.skillTitle });
+      case 'saveTaskAsProcedure':
+        respondAsync(sendResponse, 'saving procedure', async () => {
+          const windowId = message.windowId
+            ?? (message.tabId ? (await chrome.tabs.get(message.tabId))?.windowId : undefined)
+            ?? (await chrome.windows.getLastFocused())?.id;
+          const procedure = windowId !== undefined ? await saveLastTaskAsProcedure(windowId, message.name) : null;
+          return procedure ? { procedure } : { success: false, error: 'No actions to save' };
+        });
+        return true;
+
+      case 'analyzeProcedure':
+        respondAsync(sendResponse, 'analyzing procedure', async () => {
+          const result = await analyzeProcedure(message.procedureId);
+          return 'error' in result ? { success: false, error: result.error } : { suggestion: result };
+        });
+        return true;
+
+      case 'openProcedureEditor':
+        chrome.tabs.create({ url: chrome.runtime.getURL(`options.html#procedures${message.procedureId ? `/${message.procedureId}` : ''}`) });
         sendResponse({ success: true });
         return true;
 
@@ -233,12 +240,13 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'checkAgentStatus' ||
       message.action === 'startRecordingCapture' ||
       message.action === 'stopRecordingCapture' ||
-      message.action === 'saveRecording' ||
       message.action === 'cancelRecording' ||
-      message.action === 'deleteRecording' ||
+      message.action === 'getRecordingStatus' ||
       message.action === 'recordingStep' ||
-      message.action === 'playRecording' ||
-      message.action === 'executeSkillPrompt' ||
+      message.action === 'runProcedure' ||
+      message.action === 'saveTaskAsProcedure' ||
+      message.action === 'analyzeProcedure' ||
+      message.action === 'openProcedureEditor' ||
       message.action === 'taskFeedback'
     )
   );
@@ -520,155 +528,15 @@ async function handleCheckAgentStatus(
   }
 }
 
-// ── Navigation capture during recording ──────────────────────────────────────
-// The content script cannot observe navigations; the background listens to
-// webNavigation events for the recorded tab and adds `navigate` steps.
-
-let recordedTabId: number | null = null;
-let lastRecordedNavUrl: string | null = null;
-
-function onRecordedNavigation(details: { tabId: number; url: string; frameId: number }): void {
-  if (recordedTabId === null || details.tabId !== recordedTabId) return;
-  if (details.frameId !== 0) return; // main frame only
-  if (!/^https?:/.test(details.url)) return;
-  if (details.url === lastRecordedNavUrl) return; // dedupe (SPA + committed both firing)
-  lastRecordedNavUrl = details.url;
-
-  const manager = RecordingManager.getInstance();
-  manager.isRecording().then(active => {
-    if (!active) return;
-    manager.addStep({
-      type: 'navigate',
-      url: details.url,
-      pageUrl: details.url,
-      timestamp: Date.now(),
-      description: `navigazione verso ${details.url}`,
-    }).then(() => {
-      chrome.runtime.sendMessage({ action: 'recordingStepAdded' }).catch?.(() => undefined);
-      // Re-arm capture in the (re)loaded page
-      if (recordedTabId !== null) {
-        setTimeout(() => {
-          if (recordedTabId !== null) {
-            chrome.tabs.sendMessage(recordedTabId, { action: 'startRecordingCapture' }, () => void chrome.runtime.lastError);
-          }
-        }, 400);
-      }
-    }).catch(() => undefined);
-  }).catch(() => undefined);
-}
-
-function attachNavigationCapture(tabId: number): void {
-  recordedTabId = tabId;
-  lastRecordedNavUrl = null;
-  try {
-    chrome.webNavigation.onCommitted.addListener(onRecordedNavigation as any);
-    chrome.webNavigation.onHistoryStateUpdated.addListener(onRecordedNavigation as any);
-  } catch {
-    // webNavigation unavailable — navigations simply won't be recorded
-  }
-}
-
-function detachNavigationCapture(): void {
-  try {
-    chrome.webNavigation.onCommitted.removeListener(onRecordedNavigation as any);
-    chrome.webNavigation.onHistoryStateUpdated.removeListener(onRecordedNavigation as any);
-  } catch {
-    // ignore
-  }
-  recordedTabId = null;
-  lastRecordedNavUrl = null;
-}
-
-async function handleStartRecordingCapture(
-  message: Extract<BackgroundMessage, { action: 'startRecordingCapture' }>,
-  sendResponse: (response?: any) => void
-): Promise<void> {
-  const manager = RecordingManager.getInstance();
-  await manager.startRecording(message.name);
-  // Tell the active tab's content script to start capturing
-  try {
-    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-    if (tabs[0]?.id) {
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'startRecordingCapture' });
-      attachNavigationCapture(tabs[0].id);
-      // Record the starting URL as the first step
-      if (tabs[0].url && /^https?:/.test(tabs[0].url)) {
-        lastRecordedNavUrl = tabs[0].url;
-        await manager.addStep({
-          type: 'navigate',
-          url: tabs[0].url,
-          pageUrl: tabs[0].url,
-          pageTitle: tabs[0].title,
-          timestamp: Date.now(),
-          description: `pagina iniziale ${tabs[0].url}`,
-        });
-      }
-    }
-  } catch {
-    // content script may not be injected yet — ignore
-  }
-  sendResponse({ success: true });
-}
-
-function handleStopRecordingCapture(
-  _message: Extract<BackgroundMessage, { action: 'stopRecordingCapture' }>,
-  sendResponse: (response?: any) => void
+/** Run an async handler and answer with {success: true, ...result} or the error. */
+function respondAsync(
+  sendResponse: (response?: any) => void,
+  context: string,
+  fn: () => Promise<Record<string, unknown>>
 ): void {
-  const stopTabId = recordedTabId;
-  detachNavigationCapture();
-  if (stopTabId !== null) {
-    chrome.tabs.sendMessage(stopTabId, { action: 'stopRecordingCapture' }, () => void chrome.runtime.lastError);
-  } else {
-    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-      if (tabs[0]?.id) {
-        chrome.tabs.sendMessage(tabs[0].id, { action: 'stopRecordingCapture' });
-      }
-    });
-  }
-  sendResponse({ success: true });
-}
-
-async function handleSaveRecording(
-  message: Extract<BackgroundMessage, { action: 'saveRecording' }>,
-  sendResponse: (response?: any) => void
-): Promise<void> {
-  detachNavigationCapture();
-  const manager = RecordingManager.getInstance();
-  const recording = await manager.stopRecording(message.description ?? '');
-  sendResponse({ success: true, recording });
-}
-
-async function handleCancelRecording(
-  _message: Extract<BackgroundMessage, { action: 'cancelRecording' }>,
-  sendResponse: (response?: any) => void
-): Promise<void> {
-  detachNavigationCapture();
-  const manager = RecordingManager.getInstance();
-  await manager.cancelRecording();
-  sendResponse({ success: true });
-}
-
-async function handleDeleteRecording(
-  message: Extract<BackgroundMessage, { action: 'deleteRecording' }>,
-  sendResponse: (response?: any) => void
-): Promise<void> {
-  const manager = RecordingManager.getInstance();
-  await manager.deleteRecording(message.name);
-  sendResponse({ success: true });
-}
-
-async function handleRecordingStep(
-  message: Extract<BackgroundMessage, { action: 'recordingStep' }>,
-  sendResponse: (response?: any) => void
-): Promise<void> {
-  const manager = RecordingManager.getInstance();
-  const isActive = await manager.isRecording();
-  if (isActive) {
-    await manager.addStep(message.step as any);
-    // Notify sidepanel of new step
-    chrome.runtime.sendMessage({ action: 'recordingStepAdded' });
-  }
-  sendResponse({ success: true });
+  fn()
+    .then(result => sendResponse({ success: true, ...result }))
+    .catch(error => sendResponse({ success: false, error: handleError(error, context) }));
 }
 
 /**

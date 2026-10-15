@@ -64,7 +64,7 @@ describe('diffMaps', () => {
     const before = [entry(1, 'button', 'Chiudi'), entry(2, 'textbox', 'Email', { value: '' })];
     const after = [entry(1, 'textbox', 'Email', { value: 'a@b.it' })];
     const diff = diffMaps(before, after);
-    expect(diff).toContain('- [1] button "Chiudi"');
+    expect(diff).toContain('- button "Chiudi"');
     expect(diff).toContain('~ [1] textbox "Email" = "a@b.it"');
   });
 
@@ -85,7 +85,8 @@ describe('browser_click_ref / browser_fill_ref', () => {
 
     const result = await tool.func('12');
 
-    expect(page.click).toHaveBeenCalledWith('#el-12', expect.any(Object));
+    // Acts on the exact element tagged during the scan
+    expect(page.click).toHaveBeenCalledWith('[data-dm-ref="12"]', expect.any(Object));
     expect(result).toContain('Clicked [12] button "Salva ordine"');
     expect(result).toContain('Changes:');
   });
@@ -102,7 +103,7 @@ describe('browser_click_ref / browser_fill_ref', () => {
     const page = createMockPage();
     const tool = browserClickRef(page);
     const result = await tool.func('1');
-    expect(result).toContain('Call browser_interactive_map first');
+    expect(result).toContain('Call browser_observe first');
   });
 
   it('espone i nuovi messaggi di pagina (toast/errori) nel risultato dell\'azione', async () => {
@@ -128,7 +129,43 @@ describe('browser_click_ref / browser_fill_ref', () => {
 
     const result = await tool.func('7|Rossi | Bianchi SRL');
 
-    expect(page.fill).toHaveBeenCalledWith('#el-7', 'Rossi | Bianchi SRL', expect.any(Object));
+    expect(page.fill).toHaveBeenCalledWith('[data-dm-ref="7"]', 'Rossi | Bianchi SRL', expect.any(Object));
     expect(result).toContain('Filled [7]');
+  });
+});
+
+describe('formatScrollInfo / formatObservation', () => {
+  it('says what is above/below the fold and behind dialogs', () => {
+    const { formatScrollInfo, formatObservation } = require('../../../../src/agent/tools/pageMapTools');
+    expect(formatScrollInfo({ scroll: { scrollTop: 0, scrollHeight: 3000, clientHeight: 750, inner: false }, below: 12, above: 0 }))
+      .toBe('Viewport shows 0–25% of the page · 12 more interactive elements BELOW (browser_scroll down to see them)');
+    expect(formatScrollInfo({ scroll: { scrollTop: 0, scrollHeight: 700, clientHeight: 750, inner: false }, covered: 4 }))
+      .toBe('Whole page fits in the viewport · 4 hidden behind the open dialog');
+    const text = formatObservation({ url: 'https://x.it/a', title: 'A', entries: [entry(3, 'link', 'Home')], alerts: ['Salvato'] });
+    expect(text).toContain('Page: "A" https://x.it/a');
+    expect(text).toContain('[3] link "Home"');
+    expect(text).toContain('! Salvato');
+  });
+});
+
+describe('parse inputs', () => {
+  beforeEach(() => {
+    _setCurrentMap({ url: 'https://example.com', entries: [entry(7, 'textbox', 'Ragione sociale')] });
+  });
+
+  it('fill_ref accepts JSON args with submit (presses Enter after filling)', async () => {
+    const page = createMockPage([]);
+    (page as any).press = jest.fn(() => Promise.resolve());
+    const result = await browserFillRef(page).func(JSON.stringify({ ref: 7, text: 'ACME', submit: true }));
+    expect(page.fill).toHaveBeenCalledWith('[data-dm-ref="7"]', 'ACME', expect.any(Object));
+    expect((page as any).press).toHaveBeenCalledWith('[data-dm-ref="7"]', 'Enter', expect.any(Object));
+    expect(result).toContain('and pressed Enter');
+  });
+
+  it('click_ref accepts {"ref": n}', async () => {
+    _setCurrentMap({ url: 'https://example.com', entries: [entry(12, 'button', 'Salva ordine')] });
+    const page = createMockPage([]);
+    await browserClickRef(page).func('{"ref": 12}');
+    expect(page.click).toHaveBeenCalledWith('[data-dm-ref="12"]', expect.any(Object));
   });
 });

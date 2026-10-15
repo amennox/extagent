@@ -11,12 +11,13 @@ This project is an **evolutionary fork of [BrowserBee](https://github.com/parsag
 ## ✨ Features
 
 - **Natural-language browser control** — navigate, click, fill forms, extract data.
-- **Structured extraction** — define JSON schemas and let the agent collect data from pages.
-- **Markdown skills** — write reusable automation workflows as `.md` files and run them with a single command.
-- **Local memory** — save successful patterns to IndexedDB and reuse them later.
-- **Explicit approval** — critical actions (submits, deletions, purchases) require your confirmation.
-- **Privacy-first** — data stays in the browser; LLM calls go only to the endpoint you configure.
-- **OpenAI-compatible providers** — use OpenAI, Azure, local servers, Ollama, vLLM, LM Studio, and more.
+- **Set-of-Marks perception** — every observation numbers the visible interactive elements (main page, iframes and open shadow roots); on vision models the same numbers are drawn on a screenshot that is sent to the model.
+- **Robust agent loop** — native function calling (several actions per turn), compact context that drops stale page dumps, a per-step state message with the live plan, loop detection, automatic fallback to a text protocol for endpoints without tools.
+- **Procedures** — record an operation once (or save a successful agent task), edit its steps and parameters, run it again without an LLM. AI steps and failed steps are handed to the agent, then the procedure resumes.
+- **Structured extraction** — JSON-schema extraction with validation, also across paginated lists.
+- **Explicit approval** — the extension (not the model) asks for confirmation before deletions, payments, sending or final confirmations.
+- **Privacy-first** — data stays in the browser; passwords and sensitive values are never stored in procedures; LLM calls go only to the endpoint you configure.
+- **OpenAI-compatible providers** — OpenAI, Azure, Ollama, vLLM, LM Studio and more.
 
 ---
 
@@ -58,91 +59,70 @@ Credentials are saved locally in the browser storage. You can also create multip
 
 1. Open the side panel by clicking the DomMotion icon or pressing `Alt+Shift+E`.
 2. Type what you want to do in natural language (e.g. *“Extract name, VAT number and contact of every supplier on this page”*).
-3. Confirm critical actions when prompted.
+3. Confirm risky actions when prompted.
 4. Export results as JSON, CSV, or copy them to the clipboard.
 
+For vision models (GPT-4o, Qwen2.5-VL, Llama 3.2 Vision, …) enable **Vision model** in the model profile: observations then include an annotated screenshot.
+
 ---
 
-## 🧩 Writing DomMotion skills
+## 🧠 How the agent works
 
-Skills are Markdown documents that describe reusable browser-automation workflows. They are stored locally and can be run from the side panel or imported/exported as `.md` files.
+Each step the agent sees:
 
-### File structure
+- a **static system prompt** (built once per task, so prefix caching works);
+- the **task message**, with notes from previous tasks on the same site and the list of saved procedures for it;
+- the **turns so far**: its own decisions are always kept, but only the latest observation of each kind is kept in full; older page dumps become a one-line placeholder, and very old turns are summarized when the context gets full;
+- a fresh **[STATE] message**: active tab and URL, plan checklist, open browser dialogs, loop warnings, and (vision) the current annotated screenshot.
 
-Every skill must start with a YAML frontmatter block delimited by `---`:
+The model acts on element **numbers** (`browser_click_ref`, `browser_fill_ref`, `browser_select_ref`, …). Numbers stay stable while it stays on the same page, and each action returns what changed on the page, including validation messages and native form errors. If it repeats the same action without progress it is warned, then stopped with an explanation.
 
-```markdown
+Main settings (Options → General): maximum steps (default 60), **action confirmations** (risky only / also saves / never), **advanced tools** (low-level CSS/DOM/mouse tools, hidden by default).
+
 ---
-title: Collect public tenders
-description: Extract title, deadline and CPV code from the public tenders page
-params: [section]
----
 
-## Steps
+## 🧩 Procedures
 
-1. Navigate to the target portal
-   - `navigate: https://example.com/tenders?section={{section}}`
+A procedure is an ordered list of steps with typed parameters and a run history. It replaces the previous "recordings" and Markdown "skills"; existing ones are migrated automatically the first time the new version starts.
 
-2. Extract structured data
-   - `extract: {"type":"object","properties":{"title":{"type":"string"},"deadline":{"type":"string"},"cpv":{"type":"string"}}}`
-   - `export: json`
-```
+### Creating one
 
-### Frontmatter fields
+- **Record**: side panel → *Record* → *Start recording*, perform the operation, *Stop and save*. Each click, filled field, selection and Enter becomes a step with a thumbnail of the element. Recording works inside iframes and web components and survives page navigations.
+- **From a successful task**: after the agent completes a task, the side panel offers *Save as procedure*.
+- **By hand or import**: Options → Procedures → *New* / *Import*.
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `title` | yes | Unique name of the skill. This is what you type in the side panel to run it. |
-| `description` | yes | Short one-line summary shown in the skill list. |
-| `params` | no | Comma-separated list of parameter names. They can be referenced in commands as `{{paramName}}`. |
+### Editing
 
-### Step commands
+Options → Procedures shows every procedure with its last outcome. In the editor you can rename steps, change values, reorder, add steps (including **AI steps**: an instruction the agent executes), mark steps optional, force or disable confirmation per step, and edit the locators.
 
-Step commands must be wrapped in backticks and follow the pattern `` `command: payload` ``. Lines that do not match a command are collected as free-text notes for the LLM.
+- *Make parameter* turns a typed value into `{{name}}` (the recorded value becomes the default).
+- *Suggest name and parameters (AI)* proposes them in one call.
+- Passwords, IBANs, payment cards and tax codes are **never stored**: they become required parameters (`secret` type for passwords).
+- Expressions: `{{oggi}}` / `{{today}}`, `{{oggi+7g:GG/MM/AAAA}}`, `{{now}}`, and variables saved by previous steps (`{{orders.total}}`).
+- *Run up to here* and *Test this step* act on the most recently used web tab.
 
-| Command | Purpose | Example |
-|---------|---------|---------|
-| `navigate` | Open a URL. | `` `navigate: https://example.com` `` |
-| `extract` | Extract structured data using a JSON schema. | `` `extract: {"type":"object","properties":{"name":{"type":"string"}}}` `` |
-| `paginate` | Collect data across multiple pages. | `` `paginate: {"nextSelector":".next","maxPages":5}` `` |
-| `fill` | Fill a form from a structured payload. | `` `fill: {"email":"user@example.com"}` `` |
-| `play` | Replay a saved recording. | `` `play: login-sequence` `` |
-| `export` | Export collected data. Supported values include `json` and `csv`. | `` `export: csv` `` |
-| `compute` | Run a lightweight data transformation. | `` `compute: normalize` `` |
+| Step | Value | Effect |
+|------|-------|--------|
+| `navigate` | URL | Opens the page |
+| `click` | — | Clicks the element |
+| `fill` | text / `{{param}}` | Fills the field |
+| `select` | option | Picks an option (native or custom dropdown) |
+| `check` | `true` / `false` | Checks or unchecks |
+| `press` | key | Presses a key on the element |
+| `wait` | seconds | Waits (empty = until the page is stable) |
+| `scroll` | `down`/`up`/`top`/`bottom` | Scrolls, or brings the element into view |
+| `extract` | JSON schema | Extracts structured data into a variable |
+| `ai` | instruction | Done by the agent |
 
-### Variables and parameters
+### Running
 
-- **Parameters** are declared in the frontmatter and substituted at runtime. Use them anywhere in the body:
-  ```markdown
-  params: [category, maxResults]
-  ---
-  - `navigate: https://example.com/items?category={{category}}&limit={{maxResults}}`
-  ```
+- **Side panel**: the procedures of the current site appear as buttons above the input; one click, parameters if needed.
+- **Agent**: it receives the site's procedures at the start of a task and calls `run_procedure`. If a step fails it completes that step itself and resumes with `startAt`.
+- Elements are located with several strategies: recorded selectors, ARIA role and name, label, visible text, inside the recorded iframe.
 
-- **Result variables** capture the output of a step and can be referenced later:
-  ```markdown
-  - `extract: {"type":"object","properties":{"total":{"type":"number"}}}` → save as {{summary}}
-  - `compute: {{summary.total}} * 1.22`
-  ```
+### Sharing
 
-### Tips for reliable skills
-
-1. **Keep the frontmatter minimal** — only `title`, `description`, and optionally `params`.
-2. **Use one command per bullet** — this makes parsing predictable.
-3. **Add free-text context** between commands; the LLM uses it as a fallback if a step fails.
-4. **Reference exact selectors or URLs** when the portal structure is known.
-5. **Test with a small JSON schema first**, then expand it once extraction works.
-6. **Use parameters for reusable values** (credentials, categories, dates) instead of hard-coding them.
-
-### Running a skill
-
-Open the side panel and type a prompt like:
-
-```text
-Run skill "Collect public tenders" with section "it-services"
-```
-
-DomMotion will match the skill by title, substitute the parameters, and execute the steps in order.
+Export as JSON (exchange format, thumbnails included) or as Markdown (readable documentation).
 
 ---
 
@@ -154,10 +134,31 @@ Key scripts:
 npm run dev        # Build and watch with static copy
 npm run build      # Production build
 npm run lint       # ESLint check
-npm test           # Run unit tests
+npm test           # Unit + end-to-end tests
 ```
 
 The extension is built with Vite. React/TypeScript source code lives in `src/`, static assets in `public/`, and build output in `dist/`.
+
+Main modules:
+
+| Path | Role |
+|------|------|
+| `src/agent/ExecutionEngine.ts` | Observe → act loop, protocol fallback, approvals, loop detection |
+| `src/agent/AgentState.ts` | Turn transcript, context compaction, [STATE] message, XML parser |
+| `src/agent/toolCatalog.ts` | Tool tiers, JSON schemas, descriptions |
+| `src/agent/tools/pageMapTools.ts` | Set-of-Marks perception and ref-based actions |
+| `src/procedures/` | Procedure model, store, builder, runner, migration |
+| `src/background/recordingSession.ts` | On-demand recording with thumbnails |
+| `src/background/procedureController.ts` | Direct procedure runs with agent fallback |
+
+### Tests
+
+`tests/unit` runs in jsdom. `tests/e2e` runs on a real Chromium through `playwright-core`: page perception on HTML scenarios (multi-tab form, custom dropdown, modal, iframe, shadow DOM, long page, inner scroll container), the agent engine driven by a scripted model, record → build → replay of procedures, and the **built extension** (`dist/`) loaded in Chromium. End-to-end suites are skipped when no Chromium build is installed:
+
+```bash
+npx playwright-core install chromium
+npm run build && npm test
+```
 
 ---
 

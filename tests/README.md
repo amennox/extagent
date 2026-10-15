@@ -634,3 +634,19 @@ Areas for test suite expansion:
 - Load testing for concurrent operations
 - Background service integration testing
 - Extension lifecycle testing
+
+## End-to-end tests (real Chromium)
+
+`tests/e2e` runs against a real Chromium through `playwright-core` (Node environment):
+
+- `perception.e2e.test.ts` — Set-of-Marks observation and ref actions on the HTML scenarios in `tests/e2e/fixtures` (multi-tab form, custom dropdown, native validation, modal, iframe, shadow DOM, long page, inner scroll container, stable refs).
+- `engine.e2e.test.ts` — the full `ExecutionEngine` driven by a scripted model: several native tool calls per turn, image parts for vision models, compaction, loop detection, XML fallback, clean cross-task history.
+- `procedures.e2e.test.ts` — the recording content script captures real interactions, the builder turns them into a procedure (sensitive values become parameters) and the runner replays it with new parameters.
+- `extension.e2e.test.ts` — the built extension (`dist/`) loaded in Chromium: migration, recording through `chrome.scripting` with thumbnails, a procedure run through playwright-crx and `chrome.debugger`, options and side panel rendering.
+
+The suites skip themselves when Chromium (or `dist/` for the extension suite) is missing:
+
+```bash
+npx playwright-core install chromium
+npm run build && npm test
+```

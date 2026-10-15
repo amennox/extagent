@@ -1,24 +1,28 @@
-import { ConfigManager } from "../background/configManager";
-import { getLang, t } from "../i18n";
-import { LLMProvider, ModelProfile, StreamChunk } from "../models/providers/types";
+import type { ConfigManager } from "../background/configManager";
+import { DEFAULT_MAX_STEPS as CONFIG_DEFAULT_MAX_STEPS } from "../background/defaults";
+import { getLang, Lang } from "../i18n";
+import { ChatMessage, LLMProvider, ModelProfile, StreamChunk, StreamError, StreamToolCall } from "../models/providers/types";
 import { TokenTrackingService } from "../tracking/tokenTrackingService";
+import type { EncodedImage } from "../utils/image";
+import {
+  buildStateMessage, classifyResult, estimateTokens, hasMalformedXmlCall, isErrorResult,
+  LoopDetector, parseXmlToolCalls, PlanStep, renderMessages, stripXmlCalls, ToolCallRecord, ToolResultRecord,
+  Transcript, TurnRecord,
+} from "./AgentState";
 import { ErrorHandler } from "./ErrorHandler";
 import { MemoryManager } from "./MemoryManager";
-import { PromptManager } from "./PromptManager";
-import { TokenManager, DEFAULT_CONTEXT_WINDOW, observationCharBudget } from "./TokenManager";
-import { setMaxReturnChars } from "./tools/utils";
+import { getCurrentPage } from "./PageContextManager";
+import { PromptManager, Protocol } from "./PromptManager";
+import { DEFAULT_CONTEXT_WINDOW, observationCharBudget, TokenManager } from "./TokenManager";
 import { ToolManager } from "./ToolManager";
 import { requestApproval } from "./approvalManager";
+import { ApprovalMode, approvalReason } from "./approvalPolicy";
+import { callSignature, exposedToolSpecs, getToolSpec, normalizeCall, ToolSpec, toolDescription } from "./toolCatalog";
+import { getMapEntry, setVisionEnabled } from "./tools/pageMapTools";
+import { toolResultImage, toolResultText } from "./tools/types";
+import { lastDialog, MAX_RETURN_CHARS, setMaxReturnChars, truncate } from "./tools/utils";
 
-const NAVIGATION_TOOLS = new Set([
-  'browser_navigate',
-  'browser_wait_for_navigation',
-  'browser_navigate_back',
-  'browser_navigate_forward',
-]);
-
-// Constants
-export const DEFAULT_MAX_STEPS = 200;   // prevent infinite loops (configurable via setMaxSteps)
+export const DEFAULT_MAX_STEPS = CONFIG_DEFAULT_MAX_STEPS;
 
 export type TaskOutcome = 'success' | 'failure' | 'cancelled' | 'maxSteps';
 
@@ -27,77 +31,78 @@ export interface RunStats {
   toolCalls: number;
   toolErrors: number;
   steps: number;
+  /** Successful state-changing actions (clicks, fills, navigations…) */
+  actions: number;
 }
 
-/**
- * Callback interface for execution
- */
+export interface RunResult {
+  outcome: TaskOutcome;
+  /** Final answer shown to the user (also the only thing kept in cross-task history) */
+  finalText: string;
+  stats: RunStats;
+}
+
 export interface ExecutionCallbacks {
   onLlmChunk?: (s: string) => void;
+  /** Called ONCE with the final answer */
   onLlmOutput: (s: string) => void;
   onToolOutput: (s: string) => void;
   onComplete: () => void;
   onError?: (error: any) => void;
   onToolStart?: (toolName: string, toolInput: string) => void;
   onToolEnd?: (result: string) => void;
+  /** A tool produced an image (screenshot): show it to the user */
+  onToolImage?: (image: EncodedImage, note: string) => void;
   onSegmentComplete?: (segment: string) => void;
   onFallbackStarted?: () => void;
   /** Debug-mode only: total-visibility trace (raw LLM response, request, tool result). */
   onDebug?: (label: string, detail: string) => void;
 }
 
-/**
- * Adapter for handling callbacks in both streaming and non-streaming modes
- */
-class CallbackAdapter {
-  private originalCallbacks: ExecutionCallbacks;
-  private isStreaming: boolean;
-  private buffer: string = '';
+export interface ExecuteOptions {
+  /** Extra context for the first user message (memories, procedures, plan…) */
+  taskHints?: string[];
+  initialPlan?: PlanStep[];
+  maxSteps?: number;
+}
 
-  constructor(callbacks: ExecutionCallbacks, isStreaming: boolean) {
-    this.originalCallbacks = callbacks;
-    this.isStreaming = isStreaming;
-  }
-
-  get adaptedCallbacks(): ExecutionCallbacks {
-    return {
-      onLlmChunk: this.handleLlmChunk.bind(this),
-      onLlmOutput: this.originalCallbacks.onLlmOutput,
-      onToolOutput: this.originalCallbacks.onToolOutput,
-      onComplete: this.handleComplete.bind(this),
-      onError: this.originalCallbacks.onError,
-      onToolStart: this.originalCallbacks.onToolStart,
-      onToolEnd: this.originalCallbacks.onToolEnd,
-      onSegmentComplete: this.originalCallbacks.onSegmentComplete,
-      onFallbackStarted: this.originalCallbacks.onFallbackStarted,
-      onDebug: this.originalCallbacks.onDebug
-    };
-  }
-
-  private handleLlmChunk(chunk: string): void {
-    if (this.isStreaming && this.originalCallbacks.onLlmChunk) {
-      // Pass through in streaming mode
-      this.originalCallbacks.onLlmChunk(chunk);
-    } else {
-      // Buffer in non-streaming mode
-      this.buffer += chunk;
-    }
-  }
-
-  private handleComplete(): void {
-    // In non-streaming mode, emit the full buffer at completion
-    if (!this.isStreaming && this.buffer.length > 0) {
-      this.originalCallbacks.onLlmOutput(this.buffer);
-      this.buffer = '';
-    }
-
-    this.originalCallbacks.onComplete();
+class LlmStreamError extends Error {
+  constructor(public info: StreamError) {
+    super(info.message);
   }
 }
 
+interface LlmTurn {
+  text: string;
+  reasoning: string;
+  toolCalls: StreamToolCall[];
+}
+
+interface PendingCall {
+  id: string;
+  name: string;
+  raw: string | Record<string, any>;
+  modelFlag?: boolean;
+}
+
+const NAVIGATION_TOOLS = new Set(['browser_navigate', 'browser_navigate_back', 'browser_navigate_forward', 'browser_wait_for_navigation', 'browser_tab']);
+const LONG_TOOLS = new Set(['extract_with_schema', 'paginate_and_collect', 'smart_extract_data', 'run_procedure', 'fill_form_from_data']);
+const PAGE_CHANGE_RE = /Navigated (to|back|forward)|Switched to tab|Procedure .* (completed|stopped)/;
+const SESSION_LOST_RE = /Target (page, context or browser )?(has been )?closed|detached|Session closed|No target with given id/i;
+
 /**
- * ExecutionEngine handles streaming execution logic, non-streaming execution logic,
- * and fallback mechanisms.
+ * ExecutionEngine runs the observe → act loop for one task.
+ *
+ * Differences from a plain chat loop (each fixes a cause of "the agent gets
+ * lost after a few steps"):
+ * - native function calling by default (several tool calls per turn), with an
+ *   automatic fallback to the XML text protocol for endpoints without tools;
+ * - the context is rebuilt every step from a turn-based transcript: stale
+ *   observations are compacted, old turns are summarized under pressure;
+ * - a [STATE] message every step (tab, plan, dialog, warnings, screenshot);
+ * - loop detection (warn, then stop) and an approval policy owned by the
+ *   extension, not by the model;
+ * - screenshots are sent to vision models as real image parts.
  */
 export class ExecutionEngine {
   private llmProvider: LLMProvider;
@@ -108,13 +113,14 @@ export class ExecutionEngine {
   private configManager: ConfigManager | null;
   private activeProfile: ModelProfile | null = null;
   private tokenManager: TokenManager = new TokenManager();
-  private cachedSystemPrompt: string | null = null;
   private maxSteps = DEFAULT_MAX_STEPS;
-  private minMsBetweenCalls = 500;
+  private minMsBetweenCalls = 300;
   private stepRetryDelayMs = 3000;
   private lastLlmCallTime = 0;
   private debugMode = false;
-  private lastRunStats: RunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0 };
+  /** The endpoint rejected native tools during this session */
+  private nativeUnsupported = false;
+  private lastRunStats: RunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0, actions: 0 };
 
   constructor(
     llmProvider: LLMProvider,
@@ -132,36 +138,13 @@ export class ExecutionEngine {
     this.configManager = configManager ?? null;
   }
 
-  private async runWithTimeout(toolName: string, fn: () => Promise<string>): Promise<string> {
-    const isNav = NAVIGATION_TOOLS.has(toolName);
-    let ms: number;
-    if (this.configManager) {
-      ms = isNav
-        ? await this.configManager.getNavigationTimeoutMs()
-        : await this.configManager.getToolTimeoutMs();
-    } else {
-      ms = 600_000;
-    }
-    return Promise.race([
-      fn(),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error(`Tool "${toolName}" timed out after ${ms}ms`)), ms)
-      ),
-    ]);
-  }
-
   setActiveProfile(profile: ModelProfile | null): void {
     this.activeProfile = profile;
-    // Propagate the profile's context window to history trimming and to the
-    // observation char limit, so both scale with the configured window
-    // (default 256k) instead of hardcoded values.
     const contextWindow = profile?.contextWindowSize
       ?? this.llmProvider.getModel?.()?.info?.contextWindow
       ?? DEFAULT_CONTEXT_WINDOW;
     this.tokenManager = new TokenManager(contextWindow);
     setMaxReturnChars(observationCharBudget(contextWindow));
-    // Profile change may alter language/config-sensitive prompt parts
-    this.cachedSystemPrompt = null;
   }
 
   setMaxSteps(n: number): void { this.maxSteps = n; }
@@ -171,759 +154,565 @@ export class ExecutionEngine {
   setDebugMode(enabled: boolean): void { this.debugMode = enabled; }
   getLastRunStats(): RunStats { return { ...this.lastRunStats }; }
 
-  /** Invalidate the per-task cached system prompt (e.g. page context changed). */
-  invalidateSystemPromptCache(): void {
-    this.cachedSystemPrompt = null;
+  /** Kept for API compatibility: the prompt is rebuilt at every task start. */
+  invalidateSystemPromptCache(): void { /* no-op */ }
+
+  private protocol(): Protocol {
+    if (this.nativeUnsupported) return 'xml';
+    return this.activeProfile?.nativeToolCalling === false ? 'xml' : 'native';
   }
 
-  private async getCachedSystemPrompt(): Promise<string> {
-    if (this.cachedSystemPrompt === null) {
-      this.cachedSystemPrompt = await this.promptManager.getSystemPrompt();
-    }
-    return this.cachedSystemPrompt;
+  private vision(): boolean {
+    return !!(this.activeProfile?.supportsImages ?? this.llmProvider.getModel?.()?.info?.supportsImages);
   }
 
-  /**
-   * Safety-net summarizer: when trimHistory drops middle turns, condense them
-   * with one non-streaming LLM call and keep the summary in history instead of
-   * losing the information silently. Failures degrade gracefully (no summary).
-   */
-  private async summarizeRemovedHistory(summaryPrompt: string): Promise<string | null> {
+  /** Read a setting; missing/failed config falls back to the default. */
+  private async setting<T>(read: (c: ConfigManager) => Promise<T>, fallback: T): Promise<T> {
+    if (!this.configManager) return fallback;
     try {
-      const stream = this.llmProvider.createMessage(
-        "You are a summarizer. Condense the following conversation turns into a factual summary (max 500 tokens). Keep tool names, selectors, extracted values and page URLs. No preamble.",
-        [{ role: "user", content: summaryPrompt }],
-        undefined,
-        this.activeProfile ?? undefined
-      );
-      let summary = "";
-      for await (const chunk of stream) {
-        if (chunk.type === "text" && chunk.text) summary += chunk.text;
-      }
-      summary = summary.trim();
-      return summary.length > 0 ? summary : null;
-    } catch (err) {
-      console.warn("History summarizer failed, continuing without summary:", err);
-      return null;
+      const v = await read(this.configManager);
+      return v ?? fallback;
+    } catch {
+      return fallback;
     }
   }
 
-  /**
-   * Main execution method with fallback support
-   */
+  private async exposedTools(vision: boolean): Promise<ToolSpec[]> {
+    const advanced = await this.setting(c => c.getAdvancedToolsEnabled(), false);
+    const registered = new Set(this.toolManager.getTools().map(t => t.name));
+    return exposedToolSpecs(registered, { vision, advanced });
+  }
+
+  private async approvalMode(): Promise<ApprovalMode> {
+    return this.setting<ApprovalMode>(c => c.getApprovalMode(), 'risky');
+  }
+
+  /** Backward-compatible entry point (there is no destructive re-run fallback anymore). */
   async executePromptWithFallback(
     prompt: string,
     callbacks: ExecutionCallbacks,
-    initialMessages: any[] = []
-  ): Promise<void> {
-    const streamingSupported = await this.errorHandler.isStreamingSupported();
-    const isStreaming = streamingSupported && callbacks.onLlmChunk !== undefined;
-
-    // Rebuild the system prompt at task start (page context / profile may have
-    // changed since the previous task); it is then cached for the whole task.
-    this.invalidateSystemPromptCache();
-
-    try {
-      // Use the execution method with appropriate streaming mode
-      await this.executePrompt(prompt, callbacks, initialMessages, isStreaming);
-    } catch (error) {
-      console.warn("Execution failed, attempting fallback:", error);
-
-      // Notify about fallback before switching modes
-      if (callbacks.onFallbackStarted) {
-        callbacks.onFallbackStarted();
-      }
-
-      // Check if this is a retryable error (rate limit or overloaded)
-      if (this.errorHandler.isRetryableError(error)) {
-        console.log("Retryable error detected in fallback handler:", error);
-        // Ensure the error callback is called even during fallback
-        if (callbacks.onError) {
-          callbacks.onError(error);
-        }
-      }
-
-      // Continue with fallback using non-streaming mode
-      await this.executePrompt(prompt, callbacks, initialMessages, false);
-    }
+    initialMessages: any[] = [],
+    options: ExecuteOptions = {}
+  ): Promise<RunResult> {
+    return this.executePrompt(prompt, callbacks, initialMessages, true, options);
   }
 
-  /**
-   * Helper function to decode escaped HTML entities in a string
-   * @param text The text to decode
-   * @returns The decoded text
-   */
-  private decodeHtmlEntities(text: string): string {
-    // Replace Unicode escape sequences with actual characters
-    return text
-      .replace(/\\u003c/g, '<')
-      .replace(/\\u003e/g, '>')
-      .replace(/\u003c/g, '<')
-      .replace(/\u003e/g, '>');
-  }
-
-  private normalizeToolCallTags(text: string): string {
-    // Defensive fix for models that close <tool> with the wrong tag
-    return text
-      .replace(/<tool>([^<]+)<\/input>/gi, '<tool>$1</tool>')
-      .replace(/<tool>([^<]+)<\/requires_approval>/gi, '<tool>$1</tool>');
-  }
-
-  /**
-   * Initialize message history with the prompt
-   */
-  private initializeMessages(prompt: string, initialMessages: any[]): any[] {
-    // Use initial messages if provided, otherwise start with just the prompt
-    const messages: any[] = initialMessages.length > 0
-      ? [...initialMessages]
-      : [{ role: "user", content: prompt }];
-
-    // If we have initial messages and the last one isn't the current prompt,
-    // add the current prompt
-    if (initialMessages.length > 0 &&
-        (messages[messages.length - 1].role !== "user" ||
-         messages[messages.length - 1].content !== prompt)) {
-      messages.push({ role: "user", content: prompt });
-    }
-
-    return messages;
-  }
-
-  /**
-   * Track token usage from stream chunks
-   */
-  private trackTokenUsage(
-    chunk: StreamChunk,
-    inputTokens: number,
-    outputTokens: number,
-    tokenTracker: TokenTrackingService
-  ): { updatedInputTokens: number, updatedOutputTokens: number } {
-    let updatedInputTokens = inputTokens;
-    let updatedOutputTokens = outputTokens;
-
-    // Debug log to help diagnose token tracking issues
-    console.debug(`Token update: input=${chunk.inputTokens || 0}, output=${chunk.outputTokens || 0}, cacheWrite=${chunk.cacheWriteTokens || 0}, cacheRead=${chunk.cacheReadTokens || 0}`);
-
-    // Handle input tokens (only from message_start)
-    if (chunk.inputTokens) {
-      updatedInputTokens = chunk.inputTokens;
-      // Track input tokens with cache tokens if available
-      tokenTracker.trackInputTokens(
-        updatedInputTokens,
-        {
-          write: chunk.cacheWriteTokens,
-          read: chunk.cacheReadTokens
-        }
-      );
-    }
-
-    // Always track output tokens (from both message_start and message_delta)
-    if (chunk.outputTokens) {
-      const newOutputTokens = chunk.outputTokens;
-
-      // Only track the delta (new tokens)
-      if (newOutputTokens > updatedOutputTokens) {
-        const delta = newOutputTokens - updatedOutputTokens;
-        tokenTracker.trackOutputTokens(delta);
-        updatedOutputTokens = newOutputTokens;
-      }
-    }
-
-    return { updatedInputTokens, updatedOutputTokens };
-  }
-
-  /**
-   * Process the LLM stream and handle streaming chunks
-   */
-  private async processLlmStream(
-    messages: any[],
-    adaptedCallbacks: ExecutionCallbacks,
-    systemPrompt?: string
-  ): Promise<{ accumulatedText: string, toolCallDetected: boolean }> {
-    let accumulatedText = "";
-    let streamBuffer = "";
-    let toolCallDetected = false;
-
-    // Rate limiting: ensure minimum time between LLM calls
-    const now = Date.now();
-    const elapsed = now - this.lastLlmCallTime;
-    if (this.lastLlmCallTime > 0 && elapsed < this.minMsBetweenCalls) {
-      await new Promise(r => setTimeout(r, this.minMsBetweenCalls - elapsed));
-    }
-    this.lastLlmCallTime = Date.now();
-
-    // Tool schemas: the canonical protocol is the XML format in the system
-    // prompt. Native function calling is sent ONLY when the profile opts in —
-    // sending both makes models mix the formats (malformed tool calls) and
-    // duplicates all schemas in the server-side prompt.
-    const tools = this.activeProfile?.nativeToolCalling
-      ? this.toolManager.getTools()
-      : [];
-
-    // Build the system prompt once per task and reuse it on every step: a
-    // byte-identical prefix lets OpenAI-compatible servers (e.g. vLLM with
-    // prefix caching) reuse the prefill across steps.
-    const effectiveSystemPrompt = systemPrompt ?? await this.getCachedSystemPrompt();
-
-    // Debug: outgoing request summary
-    if (this.debugMode && adaptedCallbacks.onDebug) {
-      const approxInput = Math.ceil(
-        (effectiveSystemPrompt.length + messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)) / 4
-      );
-      adaptedCallbacks.onDebug('→ LLM request', [
-        `model: ${this.activeProfile?.modelId ?? '(default)'}`,
-        `reasoning_effort: ${this.activeProfile?.reasoningEffort ?? 'off'}`,
-        `messages: ${messages.length} · system prompt: ${effectiveSystemPrompt.length} chars`,
-        `approx input: ~${approxInput} tokens · tools: ${tools.length}`,
-      ].join('\n'));
-    }
-
-    const stream = this.llmProvider.createMessage(
-      effectiveSystemPrompt,
-      messages,
-      tools,
-      this.activeProfile ?? undefined
-    );
-
-    // Track token usage
-    let inputTokens = 0;
-    let outputTokens = 0;
-    let accumulatedReasoning = "";
-    const tokenTracker = TokenTrackingService.getInstance();
-
-    for await (const chunk of stream) {
-      if (this.errorHandler.isExecutionCancelled()) break;
-
-      // Track token usage
-      if (chunk.type === 'usage') {
-        const result = this.trackTokenUsage(chunk, inputTokens, outputTokens, tokenTracker);
-        inputTokens = result.updatedInputTokens;
-        outputTokens = result.updatedOutputTokens;
-      }
-
-      // Capture reasoning (thinking) for debug visibility
-      if (chunk.type === 'reasoning' && chunk.reasoning) {
-        accumulatedReasoning += chunk.reasoning;
-      }
-
-      // Handle text chunks
-      if (chunk.type === 'text' && chunk.text) {
-        const textChunk = chunk.text;
-        accumulatedText += textChunk;
-        streamBuffer += textChunk;
-
-        // Only look for complete tool calls with all three required tags
-        const completeToolCallRegex = /(```(?:xml|bash)\s*)?<tool>(.*?)<\/tool>\s*<input>([\s\S]*?)<\/input>\s*<requires_approval>(.*?)<\/requires_approval>(\s*```)?/;
-
-        // Try to match the complete tool call pattern
-        const completeToolCallMatch = streamBuffer.match(completeToolCallRegex);
-
-        // Only process complete tool calls with all three required tags
-        if (completeToolCallMatch && !toolCallDetected) {
-          toolCallDetected = true;
-          console.log("Complete tool call detected:", completeToolCallMatch);
-
-          // Extract the tool call with requires_approval value
-          const [fullMatch, codeBlockStart, toolName, toolInput, requiresApprovalRaw] = completeToolCallMatch;
-
-          // Find the start of the tool call
-          const matchIndex = codeBlockStart
-            ? (streamBuffer.indexOf("```xml") !== -1
-               ? streamBuffer.indexOf("```xml")
-               : streamBuffer.indexOf("```bash"))
-            : streamBuffer.indexOf("<tool>");
-
-          // Get text before the tool call
-          const textBeforeToolCall = streamBuffer.substring(0, matchIndex);
-
-          // Finalize the current segment
-          if (textBeforeToolCall.trim() && adaptedCallbacks.onSegmentComplete) {
-            adaptedCallbacks.onSegmentComplete(textBeforeToolCall);
-          }
-
-          // Signal that a tool call is starting
-          if (adaptedCallbacks.onToolStart) {
-            adaptedCallbacks.onToolStart(toolName.trim(), toolInput.trim());
-          }
-
-          // Clear the buffer
-          streamBuffer = "";
-
-          // Don't send any more chunks until tool execution is complete
-          break;
-        }
-
-        // If no tool call detected yet, continue sending chunks
-        if (!toolCallDetected && adaptedCallbacks.onLlmChunk) {
-          adaptedCallbacks.onLlmChunk(textChunk);
-        }
-      }
-    }
-
-    // After streaming completes, process the full response
-    console.log("Streaming completed. Accumulated text length:", accumulatedText.length);
-
-    // Decode any escaped HTML entities in the accumulated text
-    accumulatedText = this.decodeHtmlEntities(accumulatedText);
-    accumulatedText = this.normalizeToolCallTags(accumulatedText);
-    console.log("Decoded HTML entities in accumulated text");
-
-    // Debug: raw LLM response (reasoning + visible answer), untouched
-    if (this.debugMode && adaptedCallbacks.onDebug) {
-      const parts: string[] = [];
-      if (accumulatedReasoning.trim()) {
-        parts.push(`[reasoning / <think>]\n${accumulatedReasoning.trim()}`);
-      }
-      parts.push(`[response]\n${accumulatedText || '(empty)'}`);
-      parts.push(`[tokens] in=${inputTokens} out=${outputTokens}`);
-      adaptedCallbacks.onDebug('← LLM raw response', parts.join('\n\n'));
-    }
-
-    adaptedCallbacks.onLlmOutput(accumulatedText);
-
-    return { accumulatedText, toolCallDetected };
-  }
-
-  /**
-   * Execute prompt with support for both streaming and non-streaming modes
-   */
   async executePrompt(
     prompt: string,
     callbacks: ExecutionCallbacks,
     initialMessages: any[] = [],
-    isStreaming: boolean
-  ): Promise<void> {
-    // Create adapter to handle streaming vs non-streaming
-    const adapter = new CallbackAdapter(callbacks, isStreaming);
-    const adaptedCallbacks = adapter.adaptedCallbacks;
-
-    // Reset cancel flag at the start of execution
+    _isStreaming = true,
+    options: ExecuteOptions = {}
+  ): Promise<RunResult> {
     this.errorHandler.resetCancel();
-    this.lastRunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0 };
+    this.lastRunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0, actions: 0 };
+    const lang: Lang = await getLang().catch(() => 'it' as Lang);
+    const S = RUN_STRINGS[lang];
+    const transcript = new Transcript();
+    if (options.initialPlan?.length) transcript.plan = options.initialPlan.map(p => ({ ...p }));
+    const loop = new LoopDetector();
+    const history = sanitizeHistory(initialMessages, prompt);
+    const task = buildTaskMessage(prompt, options.taskHints, lang);
+    const maxSteps = options.maxSteps ?? this.maxSteps;
+    const vision = this.vision();
+    setVisionEnabled(vision);
+
+    let protocol = this.protocol();
+    const tools = await this.exposedTools(vision);
+    let systemPrompt = await this.promptManager.getSystemPrompt({ lang, protocol, vision, tools });
+    const approvalMode = await this.approvalMode();
+
+    let finalText = '';
+    let warning: string | undefined;
+    let emptyResponses = 0;
+    let overflowRetried = false;
+    let step = 0;
+
     try {
-      // Initialize messages with the prompt
-      let messages = this.initializeMessages(prompt, initialMessages);
+      while (step < maxSteps && !this.errorHandler.isExecutionCancelled()) {
+        step++;
+        await this.compactIfNeeded(transcript, history, task, systemPrompt, lang, false);
 
-      // One system prompt per task: stable prefix across steps (prefix caching)
-      const taskSystemPrompt = await this.getCachedSystemPrompt();
+        const img = vision ? transcript.currentImage() : null;
+        const state = buildStateMessage({
+          step, maxSteps, plan: transcript.plan, warning, vision, lang,
+          ...(await this.pageState()),
+          image: img?.image ? 'attached' : img?.stale ? 'stale' : 'none',
+        });
+        const messages = renderMessages(transcript, { history, task, state, image: img?.image ?? null, lang });
 
-      let done = false;
-      let step = 0;
-      let consecutiveEmptyResponses = 0;
-      const MAX_EMPTY_RESPONSES = 2;
-
-      while (!done && step++ < this.maxSteps && !this.errorHandler.isExecutionCancelled()) {
+        let llm: LlmTurn;
         try {
-          // Check for cancellation before each major step
-          if (this.errorHandler.isExecutionCancelled()) break;
-
-          // ── 1. Call LLM with streaming ───────────────────────────────────────
-          // Retry up to 2 times on the same step before propagating the error
-          const MAX_STEP_RETRIES = 2;
-          let llmResult: Awaited<ReturnType<typeof this.processLlmStream>> | null = null;
-          for (let attempt = 0; attempt <= MAX_STEP_RETRIES; attempt++) {
-            try {
-              llmResult = await this.processLlmStream(messages, adaptedCallbacks, taskSystemPrompt);
-              break;
-            } catch (stepErr: any) {
-              if (attempt < MAX_STEP_RETRIES && !this.errorHandler.isExecutionCancelled()) {
-                const wait = this.stepRetryDelayMs * (attempt + 1);
-                const lang = await getLang().catch(() => 'it' as const);
-                adaptedCallbacks.onToolOutput(
-                  t('agent.stepRetry', lang, { step: String(step), attempt: String(attempt + 1), max: String(MAX_STEP_RETRIES) })
-                );
-                await new Promise(r => setTimeout(r, wait));
-              } else {
-                throw stepErr;
-              }
-            }
-          }
-          const { accumulatedText } = llmResult!;
-
-          // Check for cancellation after LLM response
-          if (this.errorHandler.isExecutionCancelled()) break;
-
-          // ── Empty response is NOT task completion ────────────────────────────
-          // Reasoning models sometimes burn the whole output in the thinking
-          // channel (or a channel we don't map) and return no visible text.
-          // Treating that as "done" silently aborts the task mid-flight.
-          if (!accumulatedText.trim()) {
-            consecutiveEmptyResponses++;
-            if (consecutiveEmptyResponses <= MAX_EMPTY_RESPONSES) {
-              messages.push({
-                role: "user",
-                content: `Your previous response was empty (no visible text reached the client — likely everything went into the reasoning channel). The task is NOT finished. Continue from where you left off and reply ONLY with the required format:
-
-<tool>tool_name</tool>
-<input>arguments</input>
-<requires_approval>true or false</requires_approval>
-
-If the task is truly complete, reply with a short final summary in plain text instead.`,
-              });
-              continue;
-            }
-            // Persistent empty responses → fail explicitly, never fake success
-            this.lastRunStats.outcome = 'failure';
-            adaptedCallbacks.onLlmOutput(
-              `Errore: il modello ha restituito ${MAX_EMPTY_RESPONSES + 1} risposte vuote consecutive (output finito nel canale di reasoning?). Task interrotto.`
-            );
-            done = true;
-            break;
-          }
-          consecutiveEmptyResponses = 0;
-
-          // Check for incomplete or malformed tool calls
-          // This regex looks for tool calls that have <tool> and <input> but are missing <requires_approval>
-          const incompleteApprovalRegex = /<tool>(.*?)<\/tool>\s*<input>([\s\S]*?)<\/input>(?!\s*<requires_approval>)/;
-          const incompleteApprovalMatch = accumulatedText.match(incompleteApprovalRegex);
-
-          // Check for interrupted tool calls (has input tag but interrupted during requires_approval)
-          const interruptedToolRegex = /<tool>(.*?)<\/tool>\s*<input>([\s\S]*?)<\/input>\s*<requires(_approval)?$/;
-          const interruptedToolMatch = accumulatedText.match(interruptedToolRegex);
-
-          // Handle incomplete tool calls with missing requires_approval tag
-          if (incompleteApprovalMatch && !accumulatedText.includes("<requires_approval>")) {
-            const toolName = incompleteApprovalMatch[1].trim();
-            const toolInput = incompleteApprovalMatch[2].trim();
-
-            console.log("Detected incomplete tool call missing requires_approval tag:", incompleteApprovalMatch[0]);
-
-            // Add a message to prompt the LLM to use the complete format
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              {
-                role: "user",
-                content: `Error: Incomplete tool call format. You provided <tool>${toolName}</tool> and <input>${toolInput}</input> but no <requires_approval> tag. Please use the complete format with all three required tags:
-
-<tool>tool_name</tool>
-<input>arguments here</input>
-<requires_approval>true or false</requires_approval>
-
-The <requires_approval> tag is mandatory. Set it to "true" for purchases, data deletion, messages visible to others, sensitive-data forms, or any risky action. If unsure, set it to "true".`
-              }
-            );
-            continue; // Continue to the next iteration
-          }
-          // Handle interrupted tool calls
-          else if (interruptedToolMatch &&
-              !interruptedToolMatch[0].includes("</requires_approval>") &&
-              (interruptedToolMatch[0].endsWith("<requires") ||
-               interruptedToolMatch[0].endsWith("<requires_approval"))) {
-
-            const toolName = interruptedToolMatch[1].trim();
-            const toolInput = interruptedToolMatch[2].trim();
-
-            console.log("Detected interrupted tool call with partial requires_approval tag:", interruptedToolMatch[0]);
-
-            // Instead of assuming approval, ask the LLM to complete the tool call properly
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              {
-                role: "user",
-                content: `Error: Your tool call was interrupted. Please provide the complete tool call with all three required tags:
-
-<tool>${toolName}</tool>
-<input>${toolInput}</input>
-<requires_approval>true or false</requires_approval>
-
-The <requires_approval> tag is mandatory. Set it to "true" for purchases, data deletion, messages visible to others, sensitive-data forms, or any risky action. If unsure, set it to "true".`
-              }
-            );
-            continue; // Continue to the next iteration
-          }
-
-          // ── 2. Parse for tool invocation ─────────────────────────────────────
-          // Only look for complete tool calls with all three required tags
-          const toolMatch = accumulatedText.match(
-            /<tool>(.*?)<\/tool>\s*<input>([\s\S]*?)<\/input>\s*<requires_approval>(.*?)<\/requires_approval>/
-          );
-
-          // Check for various types of incomplete tool calls
-          // 1. Tool tag without input tag
-          const missingInputMatch = accumulatedText.match(/<tool>(.*?)<\/tool>(?!\s*<input>)/);
-          // 2. Tool and input tags without requires_approval tag
-          const missingApprovalMatch = accumulatedText.match(/<tool>(.*?)<\/tool>\s*<input>([\s\S]*?)<\/input>(?!\s*<requires_approval>)/);
-
-          if (missingInputMatch !== null && toolMatch === null) {
-            // Handle tool call missing input tag
-            const toolName = missingInputMatch[1].trim();
-            adaptedCallbacks.onToolOutput(`⚠️ Incomplete tool call detected: ${toolName} (missing input and requires_approval tags)`);
-
-            // Add a message to prompt the LLM to complete the tool call with all required tags
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              {
-                role: "user",
-                content: `Error: Incomplete tool call. You provided <tool>${toolName}</tool> but are missing the <input> and <requires_approval> tags. Please provide the complete tool call with all three required tags:
-
-<tool>${toolName}</tool>
-<input>arguments here</input>
-<requires_approval>true or false</requires_approval>
-
-The <requires_approval> tag is mandatory. Set it to "true" for purchases, data deletion, messages visible to others, sensitive-data forms, or any risky action. If unsure, set it to "true".`
-              }
-            );
-            continue; // Continue to the next iteration
-          } else if (missingApprovalMatch !== null && toolMatch === null) {
-            // Handle tool call missing requires_approval tag
-            const toolName = missingApprovalMatch[1].trim();
-            const toolInput = missingApprovalMatch[2].trim();
-            adaptedCallbacks.onToolOutput(`⚠️ Incomplete tool call detected: ${toolName} (missing requires_approval tag)`);
-
-            // Add a message to prompt the LLM to complete the tool call with all required tags
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              {
-                role: "user",
-                content: `Error: Incomplete tool call. You provided <tool>${toolName}</tool> and <input>${toolInput}</input> but are missing the <requires_approval> tag. Please provide the complete tool call with all three required tags:
-
-<tool>${toolName}</tool>
-<input>${toolInput}</input>
-<requires_approval>true or false</requires_approval>
-
-The <requires_approval> tag is mandatory. Set it to "true" for purchases, data deletion, messages visible to others, sensitive-data forms, or any risky action. If unsure, set it to "true".`
-              }
-            );
-            continue; // Continue to the next iteration
-          }
-
-          if (!toolMatch) {
-            // no tool tag ⇒ task complete
-            done = true;
-            break;
-          }
-
-          // Extract tool information from the complete tool call
-          let toolName, toolInput, llmRequiresApproval;
-
-          if (toolMatch) {
-            const [, toolNameRaw, toolInputRaw, requiresApprovalRaw] = toolMatch;
-            toolName = toolNameRaw.trim();
-            toolInput = toolInputRaw.trim();
-            llmRequiresApproval = requiresApprovalRaw.trim().toLowerCase() === 'true';
-          } else {
-            // No valid tool call found, task is complete
-            done = true;
-            break;
-          }
-          const tool = this.toolManager.findTool(toolName);
-
-          // Check if the LLM has marked this as requiring approval
-          const requiresApproval = llmRequiresApproval;
-          const reason = llmRequiresApproval ? "The AI assistant has determined this action requires your approval." : "";
-
-          if (!tool) {
-            messages.push(
-              { role: "assistant", content: accumulatedText },
-              {
-                role: "user",
-                content: `Error: tool "${toolName}" not found. Available: ${this.toolManager.getTools()
-                  .map((t) => t.name)
-                  .join(", ")}`,
-              }
-            );
+          llm = await this.callLlmWithRetries(systemPrompt, messages, protocol === 'native' ? tools : [], protocol, callbacks, step, lang);
+        } catch (err) {
+          if (err instanceof LlmStreamError && err.info.toolsUnsupported && protocol === 'native') {
+            this.nativeUnsupported = true;
+            protocol = 'xml';
+            systemPrompt = await this.promptManager.getSystemPrompt({ lang, protocol, vision, tools });
+            callbacks.onToolOutput(S.switchedToXml);
+            step--;
             continue;
           }
-
-          // Check for cancellation before tool execution
-          if (this.errorHandler.isExecutionCancelled()) break;
-
-          // ── 3. Execute tool ──────────────────────────────────────────────────
-          adaptedCallbacks.onToolOutput(`🕹️ tool: ${toolName} | args: ${toolInput}`);
-
-          let result: string;
-
-          if (requiresApproval) {
-            // Notify the user that approval is required
-            adaptedCallbacks.onToolOutput(`⚠️ This action requires approval: ${reason}`);
-
-            // Get the current tab ID from chrome.tabs API
-            const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-            const tabId = tabs[0]?.id || 0;
-
-            try {
-              // Request approval from the user
-              const approved = await requestApproval(tabId, toolName, toolInput, reason);
-
-              if (approved) {
-                // User approved, execute the tool
-                adaptedCallbacks.onToolOutput(`✅ Action approved by user. Executing...`);
-
-                // Create a context object to pass to the tool
-                const context = {
-                  requiresApproval: true,
-                  approvalReason: reason
-                };
-
-                // Execute the tool with the context
-                result = await this.runWithTimeout(toolName, () => tool.func(toolInput, context));
-              } else {
-                // User rejected, skip execution
-                result = "Action cancelled by user.";
-                adaptedCallbacks.onToolOutput(`❌ Action rejected by user.`);
-              }
-            } catch (approvalError) {
-              console.error(`Error in approval process:`, approvalError);
-              result = "Error in approval process. Action cancelled.";
-              adaptedCallbacks.onToolOutput(`❌ Error in approval process: ${approvalError}`);
-            }
-          } else {
-            // No approval required, execute the tool normally
-            result = await this.runWithTimeout(toolName, () => tool.func(toolInput));
+          if (err instanceof LlmStreamError && err.info.contextOverflow && !overflowRetried) {
+            overflowRetried = true;
+            history.length = 0;
+            await this.compactIfNeeded(transcript, history, task, systemPrompt, lang, true);
+            step--;
+            continue;
           }
-
-          // Outcome stats
-          this.lastRunStats.toolCalls++;
-          if (typeof result === 'string' && /^Error\b|^❌/.test(result.trim())) {
-            this.lastRunStats.toolErrors++;
-          }
-
-          // Signal that tool execution is complete
-          if (adaptedCallbacks.onToolEnd) {
-            adaptedCallbacks.onToolEnd(result);
-          }
-
-          // Debug: full (untruncated) tool result
-          if (this.debugMode && adaptedCallbacks.onDebug) {
-            adaptedCallbacks.onDebug(`⚙ tool result · ${toolName}`, result);
-          }
-
-          // Check for cancellation after tool execution
-          if (this.errorHandler.isExecutionCancelled()) break;
-
-          // ── 4. Record turn & prune history ───────────────────────────────────
-          messages.push(
-            { role: "assistant", content: accumulatedText }
-          );
-
-          // Add the tool result to the message history
-          try {
-            // Try to parse the result as JSON to handle special formats
-            const parsedResult = JSON.parse(result);
-
-            // Handle screenshot references
-            if (parsedResult.type === "screenshotRef" && parsedResult.id) {
-              // Create a message for the LLM with the screenshot reference
-              // The actual screenshot display is handled by agentController.ts
-              messages.push({
-                role: "user",
-                content: `Tool result: Screenshot captured (${parsedResult.id}). ${parsedResult.note || ''} Based on this image, please answer the user's original question: "${prompt}". Don't just describe the image - focus on answering the specific question or completing the task the user asked for.`
-              });
-            } else {
-              // For other JSON results, stringify them nicely
-              messages.push({
-                role: "user",
-                content: `Tool result: ${JSON.stringify(parsedResult, null, 2)}`
-              });
-            }
-          } catch (error) {
-            // If not valid JSON, add as plain text
-            messages.push({ role: "user", content: `Tool result: ${result}` });
-          }
-
-          // Trim against the active profile's context window; if turns were
-          // dropped, condense them into a summary instead of losing them.
-          const { trimmed, removedSummaryPrompt } = this.tokenManager.trim(messages);
-          if (removedSummaryPrompt && trimmed.length < messages.length) {
-            const summary = await this.summarizeRemovedHistory(removedSummaryPrompt);
-            if (summary) {
-              // Insert right after the first (original task) message
-              trimmed.splice(1, 0, {
-                role: "user",
-                content: `[Summary of earlier turns removed from history]\n${summary}`,
-              });
-            }
-          }
-          messages = trimmed;
-        } catch (error) {
-          // If an error occurs during execution, check if it was due to cancellation
-          if (this.errorHandler.isExecutionCancelled()) break;
-          throw error; // Re-throw if it wasn't a cancellation
+          throw err;
         }
+        if (this.errorHandler.isExecutionCancelled()) break;
+
+        // ── Collect tool calls (native first, XML in text as fallback) ──────
+        let turnProtocol: 'native' | 'xml' = protocol;
+        let calls: PendingCall[] = llm.toolCalls.map(tc => ({ id: tc.id, name: tc.name, raw: parseArguments(tc.arguments) }));
+        if (calls.length === 0) {
+          const xml = parseXmlToolCalls(llm.text);
+          if (xml.length) {
+            turnProtocol = 'xml';
+            calls = xml.map((c, i) => ({ id: `xml_${step}_${i}`, name: c.name, raw: c.input, modelFlag: c.requiresApproval }));
+          }
+        }
+
+        if (calls.length === 0) {
+          if (!llm.text.trim()) {
+            emptyResponses++;
+            if (emptyResponses <= 2) {
+              transcript.addTurn({ text: '', calls: [], results: [], feedback: S.emptyResponse, protocol: turnProtocol });
+              continue;
+            }
+            this.lastRunStats.outcome = 'failure';
+            finalText = S.emptyFailure;
+            break;
+          }
+          if (hasMalformedXmlCall(llm.text)) {
+            transcript.addTurn({ text: llm.text, calls: [], results: [], feedback: S.malformedCall, protocol: 'xml' });
+            continue;
+          }
+          finalText = llm.text.trim();
+          break;
+        }
+        emptyResponses = 0;
+
+        const visible = turnProtocol === 'xml' ? stripXmlCalls(llm.text) : llm.text.trim();
+        if (visible && callbacks.onSegmentComplete) callbacks.onSegmentComplete(visible);
+
+        // ── Execute calls sequentially ────────────────────────────────────
+        const turn: TurnRecord = { text: llm.text, calls: [], results: [], protocol: turnProtocol };
+        let skipReason: string | null = null;
+        for (let i = 0; i < calls.length; i++) {
+          const c = calls[i];
+          const { args, input } = normalizeCall(c.name, c.raw);
+          const record: ToolCallRecord = { id: c.id, name: c.name, args, input };
+          turn.calls.push(record);
+          if (skipReason || this.errorHandler.isExecutionCancelled()) {
+            turn.results.push({ callId: c.id, name: c.name, text: skipReason ?? S.cancelled, kind: 'meta', mutating: false, isError: false, skipped: true });
+            continue;
+          }
+          const result = await this.executeCall(record, c.modelFlag, callbacks, transcript, approvalMode, lang);
+          turn.results.push(result);
+          const spec = getToolSpec(c.name);
+          loop.record({
+            signature: callSignature(c.name, args),
+            name: c.name,
+            isError: result.isError,
+            noChange: /no visible changes/.test(result.text),
+            mutating: result.mutating,
+            observation: spec?.kind === 'observation',
+          });
+          if (i < calls.length - 1) {
+            if (result.isError) skipReason = S.skippedAfterError;
+            else if (PAGE_CHANGE_RE.test(result.text)) skipReason = S.skippedAfterPageChange;
+            else if (/rejected by the user/i.test(result.text)) skipReason = S.skippedAfterRejection;
+          }
+        }
+        transcript.addTurn(turn);
+
+        const status = loop.status(lang);
+        if (status.stop) {
+          this.lastRunStats.outcome = 'failure';
+          finalText = status.stop;
+          break;
+        }
+        warning = status.warning;
       }
 
       this.lastRunStats.steps = step;
       if (this.errorHandler.isExecutionCancelled()) {
         this.lastRunStats.outcome = 'cancelled';
-        const lang = await getLang().catch(() => 'it' as const);
-        adaptedCallbacks.onLlmOutput(`\n\n${t('agent.cancelledByUser', lang)}`);
-      } else if (step >= this.maxSteps) {
+        finalText = finalText || S.cancelledByUser;
+      } else if (!finalText && step >= maxSteps) {
         this.lastRunStats.outcome = 'maxSteps';
-        const lang = await getLang().catch(() => 'it' as const);
-        adaptedCallbacks.onLlmOutput(t('error.maxStepsReached', lang));
+        finalText = S.maxSteps(maxSteps, transcript.plan);
       } else if (this.lastRunStats.outcome !== 'failure') {
-        // Completed normally; a high tool-error rate still marks it a failure.
-        // (An explicit failure set inside the loop — e.g. persistent empty
-        // responses — is preserved.)
         const { toolCalls, toolErrors } = this.lastRunStats;
         this.lastRunStats.outcome = toolCalls > 0 && toolErrors / toolCalls > 0.5 ? 'failure' : 'success';
       }
-      adaptedCallbacks.onComplete();
-    } catch (err: any) {
-      // Check if this is a retryable error (rate limit or overloaded)
-      if (this.errorHandler.isRetryableError(err)) {
-        console.log("Retryable error detected:", err);
-        // For retryable errors, notify but don't complete processing
-        // This allows the fallback mechanism to retry while maintaining UI state
-        if (adaptedCallbacks.onError) {
-          adaptedCallbacks.onError(err);
-        } else {
-          adaptedCallbacks.onLlmOutput(this.errorHandler.formatErrorMessage(err));
-        }
+    } catch (err) {
+      this.lastRunStats.outcome = 'failure';
+      this.lastRunStats.steps = step;
+      const message = err instanceof Error ? err.message : String(err);
+      finalText = S.fatal(message);
+      callbacks.onError?.(err);
+    }
 
-        // Notify about fallback before re-throwing
-        if (adaptedCallbacks.onFallbackStarted) {
-          adaptedCallbacks.onFallbackStarted();
-        }
+    callbacks.onLlmOutput(finalText);
+    callbacks.onComplete();
+    return { outcome: this.lastRunStats.outcome, finalText, stats: { ...this.lastRunStats } };
+  }
 
-        // Get retry attempt from error if available, or default to 0
-        const retryAttempt = (err as any).retryAttempt || 0;
+  // ── One tool call ────────────────────────────────────────────────────────
 
-        // Maximum number of retry attempts
-        const MAX_RETRY_ATTEMPTS = 5;
+  private async executeCall(
+    call: ToolCallRecord,
+    modelFlag: boolean | undefined,
+    callbacks: ExecutionCallbacks,
+    transcript: Transcript,
+    approvalMode: ApprovalMode,
+    lang: Lang
+  ): Promise<ToolResultRecord> {
+    const S = RUN_STRINGS[lang];
+    const { name, args, input } = call;
+    callbacks.onToolStart?.(name, input);
+    callbacks.onToolOutput(`🕹️ tool: ${name} | args: ${displayArgs(name, args, input)}`);
 
-        if (retryAttempt < MAX_RETRY_ATTEMPTS && !isStreaming) {
-          // Only retry in non-streaming mode
-          // Calculate backoff time using the ErrorHandler
-          const backoffTime = this.errorHandler.calculateBackoffTime(err, retryAttempt);
+    const finish = (text: string, image?: EncodedImage): ToolResultRecord => {
+      const isError = isErrorResult(text);
+      const cls = classifyResult(name, text);
+      this.lastRunStats.toolCalls++;
+      if (isError) this.lastRunStats.toolErrors++;
+      else if (cls.mutating) this.lastRunStats.actions++;
+      if (image) callbacks.onToolImage?.(image, text.split('\n')[0]);
+      callbacks.onToolEnd?.(text);
+      if (this.debugMode) callbacks.onDebug?.(`⚙ tool result · ${name}`, text);
+      return { callId: call.id, name, text, image, kind: cls.kind, family: cls.family, mutating: cls.mutating, isError };
+    };
 
-          // Wait before retrying
-          await new Promise(resolve => setTimeout(resolve, backoffTime));
+    // Engine-handled meta tool
+    if (name === 'update_plan') {
+      const steps = Array.isArray(args.steps) ? args.steps : [];
+      transcript.plan = steps
+        .filter((s: any) => s && typeof s.title === 'string')
+        .map((s: any) => ({ title: String(s.title).slice(0, 160), status: ['todo', 'doing', 'done'].includes(s.status) ? s.status : 'todo' }));
+      return finish(`Plan updated (${transcript.plan.length} steps).`);
+    }
 
-          // Notify that we're retrying
-          const errorType = this.errorHandler.isOverloadedError(err) ? 'server overload' : 'rate limit';
-          adaptedCallbacks.onToolOutput(`Retrying after ${errorType} error (attempt ${retryAttempt + 1} of ${MAX_RETRY_ATTEMPTS})...`);
+    const tool = this.toolManager.findTool(name);
+    if (!tool) {
+      const available = (await this.exposedTools(this.vision())).map(t => t.name).join(', ');
+      return finish(`Error: tool "${name}" does not exist. Available tools: ${available}`);
+    }
 
-          // Increment retry attempt for the next try
-          (err as any).retryAttempt = retryAttempt + 1;
+    // Approval decided by the extension (the model's flag only adds caution)
+    const refArg = args.ref ?? (name.endsWith('_ref') ? Number(String(args.input ?? input).split('|')[0]) : undefined);
+    const entry = refArg !== undefined && !isNaN(Number(refArg)) ? getMapEntry(Number(refArg)) : undefined;
+    const reason = approvalReason(name, args, { mode: approvalMode, entry, modelFlag });
+    if (reason) {
+      callbacks.onToolOutput(`⚠️ ${S.approvalNeeded}: ${reason}`);
+      let approved = false;
+      try {
+        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+        approved = await requestApproval(tabs[0]?.id ?? 0, name, displayArgs(name, args, input), reason);
+      } catch (err) {
+        console.error('Approval error:', err);
+      }
+      if (!approved) {
+        callbacks.onToolOutput(`❌ ${S.rejected}`);
+        return finish(S.rejectedForModel);
+      }
+      callbacks.onToolOutput(`✅ ${S.approved}`);
+    }
 
-          // Recursive retry with the same parameters
-          return this.executePrompt(prompt, callbacks, initialMessages, isStreaming);
-        } else if (retryAttempt >= MAX_RETRY_ATTEMPTS) {
-          // We've exceeded the maximum number of retry attempts
-          adaptedCallbacks.onLlmOutput(
-            `Maximum retry attempts (${MAX_RETRY_ATTEMPTS}) exceeded. Please try again later.`
-          );
-          adaptedCallbacks.onComplete();
-        } else {
-          // In streaming mode, re-throw to trigger fallback
-          throw err;
-        }
-      } else {
-        // For other errors, show error message
-        this.lastRunStats.outcome = 'failure';
-        adaptedCallbacks.onLlmOutput(
-          `Fatal error: ${err instanceof Error ? err.message : String(err)}`
-        );
+    let raw;
+    try {
+      raw = await this.runWithTimeout(name, () => tool.func(input, reason ? { requiresApproval: true, approvalReason: reason } : undefined));
+    } catch (err) {
+      raw = `Error: ${err instanceof Error ? err.message : String(err)}`;
+    }
+    let text = toolResultText(raw) ?? '';
+    if (SESSION_LOST_RE.test(text)) text += `\n${S.sessionLost}`;
+    if (text.length > MAX_RETURN_CHARS * 2) text = truncate(text, MAX_RETURN_CHARS * 2);
+    return finish(text, toolResultImage(raw));
+  }
 
-        // In streaming mode, re-throw to trigger fallback WITHOUT completing
-        if (isStreaming) {
-          throw err;
-        } else {
-          // Only complete processing if we're not going to fallback
-          adaptedCallbacks.onComplete();
-        }
+  private async runWithTimeout<T>(toolName: string, fn: () => Promise<T>): Promise<T> {
+    let ms = NAVIGATION_TOOLS.has(toolName)
+      ? await this.setting(c => c.getNavigationTimeoutMs(), 60_000)
+      : await this.setting(c => c.getToolTimeoutMs(), 30_000);
+    if (!Number.isFinite(ms) || ms <= 0) ms = 30_000;
+    if (LONG_TOOLS.has(toolName)) ms = Math.max(ms, 600_000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        fn(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`tool "${toolName}" timed out after ${Math.round(ms / 1000)}s`)), ms);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  // ── Page state for the [STATE] message ───────────────────────────────────
+
+  private async pageState(): Promise<{ url?: string; title?: string; tabs?: number; dialog?: { type: string; message: string } | null }> {
+    try {
+      const page = getCurrentPage(this.toolManager.getPage());
+      const url = page.url();
+      const title = await Promise.race([
+        page.title(),
+        new Promise<string>(resolve => setTimeout(() => resolve(''), 1500)),
+      ]).catch(() => '');
+      let tabs: number | undefined;
+      try { tabs = page.context().pages().length; } catch { tabs = undefined; }
+      const dialog = lastDialog ? { type: lastDialog.type(), message: lastDialog.message() } : null;
+      return { url, title, tabs, dialog };
+    } catch {
+      return {};
+    }
+  }
+
+  // ── Context compaction ───────────────────────────────────────────────────
+
+  private async compactIfNeeded(
+    transcript: Transcript,
+    history: ChatMessage[],
+    task: string,
+    systemPrompt: string,
+    lang: Lang,
+    force: boolean
+  ): Promise<void> {
+    const threshold = this.tokenManager.summarizeThreshold;
+    const estimate = () => estimateTokens(renderMessages(transcript, { history, task, state: '', lang }), systemPrompt);
+    if (!force && estimate() <= threshold) return;
+
+    // Cross-task history goes first
+    while (history.length && (force || estimate() > threshold)) history.shift();
+    if (!force && estimate() <= threshold) return;
+
+    const keep = force ? 2 : 4;
+    const n = transcript.turns.length - keep;
+    if (n <= 0) return;
+    const compact = transcript.renderTurnsCompact(0, n);
+    const summary = await this.summarize(transcript.summary, compact, lang);
+    transcript.summary = summary ?? `${transcript.summary ?? ''}\n${compact}`.slice(-6000);
+    transcript.dropOldest(keep);
+  }
+
+  private async summarize(previous: string | null, turns: string, lang: Lang): Promise<string | null> {
+    try {
+      const instruction = lang === 'en'
+        ? 'Condense these browser-agent steps into a factual progress summary (max 300 words): what was done, on which pages, values entered or extracted, what failed, what remains. Keep exact names, URLs and data. No preamble.'
+        : 'Riassumi questi passi di un agente browser in un riepilogo fattuale dei progressi (max 300 parole): cosa è stato fatto, su quali pagine, valori inseriti o estratti, cosa è fallito, cosa resta da fare. Mantieni nomi, URL e dati esatti. Niente preamboli.';
+      const content = `${previous ? `${lang === 'en' ? 'Previous summary' : 'Riepilogo precedente'}:\n${previous}\n\n` : ''}${turns}`;
+      const stream = this.llmProvider.createMessage(instruction, [{ role: 'user', content: content.slice(0, 60_000) }], undefined, this.activeProfile ?? undefined);
+      let text = '';
+      for await (const chunk of stream) {
+        if (chunk.type === 'text' && chunk.text) text += chunk.text;
+        if (chunk.type === 'error') return null;
+      }
+      text = text.trim();
+      return text || null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ── LLM call ─────────────────────────────────────────────────────────────
+
+  private async callLlmWithRetries(
+    systemPrompt: string,
+    messages: ChatMessage[],
+    tools: ToolSpec[],
+    protocol: Protocol,
+    callbacks: ExecutionCallbacks,
+    step: number,
+    lang: Lang
+  ): Promise<LlmTurn> {
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.callLlm(systemPrompt, messages, tools, protocol, callbacks, lang);
+      } catch (err) {
+        const fatal = err instanceof LlmStreamError && (err.info.toolsUnsupported || err.info.contextOverflow);
+        if (fatal || attempt >= MAX_RETRIES || this.errorHandler.isExecutionCancelled()) throw err;
+        callbacks.onToolOutput(RUN_STRINGS[lang].stepRetry(step, attempt + 1, MAX_RETRIES));
+        await new Promise(r => setTimeout(r, this.stepRetryDelayMs * (attempt + 1)));
       }
     }
   }
+
+  private async callLlm(
+    systemPrompt: string,
+    messages: ChatMessage[],
+    tools: ToolSpec[],
+    protocol: Protocol,
+    callbacks: ExecutionCallbacks,
+    lang: Lang
+  ): Promise<LlmTurn> {
+    const elapsed = Date.now() - this.lastLlmCallTime;
+    if (this.lastLlmCallTime > 0 && elapsed < this.minMsBetweenCalls) {
+      await new Promise(r => setTimeout(r, this.minMsBetweenCalls - elapsed));
+    }
+    this.lastLlmCallTime = Date.now();
+
+    const providerTools = tools.map(t => ({ name: t.name, description: toolDescription(t, lang), inputSchema: t.schema }));
+    if (this.debugMode && callbacks.onDebug) {
+      callbacks.onDebug('→ LLM request', [
+        `model: ${this.activeProfile?.modelId ?? '(default)'} · protocol: ${protocol} · vision: ${this.vision()}`,
+        `messages: ${messages.length} · system prompt: ${systemPrompt.length} chars · tools: ${providerTools.length}`,
+        `approx input: ~${estimateTokens(messages, systemPrompt)} tokens`,
+        `last message:\n${lastMessagePreview(messages)}`,
+      ].join('\n'));
+    }
+
+    const stream = this.llmProvider.createMessage(systemPrompt, messages, providerTools, this.activeProfile ?? undefined);
+    let text = '';
+    let reasoning = '';
+    let forwarded = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    const toolCalls: StreamToolCall[] = [];
+    const tracker = TokenTrackingService.getInstance();
+
+    for await (const chunk of stream as AsyncIterable<StreamChunk>) {
+      if (this.errorHandler.isExecutionCancelled()) break;
+      switch (chunk.type) {
+        case 'usage':
+          if (chunk.inputTokens) {
+            inputTokens = chunk.inputTokens;
+            tracker.trackInputTokens(inputTokens, { write: chunk.cacheWriteTokens, read: chunk.cacheReadTokens });
+          }
+          if (chunk.outputTokens && chunk.outputTokens > outputTokens) {
+            tracker.trackOutputTokens(chunk.outputTokens - outputTokens);
+            outputTokens = chunk.outputTokens;
+          }
+          break;
+        case 'reasoning':
+          reasoning += chunk.reasoning ?? '';
+          break;
+        case 'tool_call':
+          if (chunk.toolCall) toolCalls.push(chunk.toolCall);
+          break;
+        case 'error':
+          throw new LlmStreamError(chunk.error ?? { message: 'Unknown LLM error' });
+        case 'text': {
+          text += chunk.text ?? '';
+          // Stream visible text to the UI, holding back XML tool markup
+          const cut = text.search(/(```(?:xml)?\s*)?<tool>/i);
+          let safeEnd = cut >= 0 ? cut : text.length;
+          const lt = text.lastIndexOf('<');
+          if (cut < 0 && lt >= 0 && lt > text.length - 8) safeEnd = lt;
+          if (safeEnd > forwarded) {
+            callbacks.onLlmChunk?.(text.slice(forwarded, safeEnd));
+            forwarded = safeEnd;
+          }
+          break;
+        }
+      }
+    }
+
+    if (this.debugMode && callbacks.onDebug) {
+      const parts: string[] = [];
+      if (reasoning.trim()) parts.push(`[reasoning]\n${reasoning.trim()}`);
+      parts.push(`[response]\n${text || '(empty)'}`);
+      if (toolCalls.length) parts.push(`[tool calls]\n${toolCalls.map(c => `${c.name} ${c.arguments}`).join('\n')}`);
+      parts.push(`[tokens] in=${inputTokens} out=${outputTokens}`);
+      callbacks.onDebug('← LLM response', parts.join('\n\n'));
+    }
+    return { text, reasoning, toolCalls };
+  }
 }
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function parseArguments(raw: string): string | Record<string, any> {
+  const t = (raw ?? '').trim();
+  if (!t) return {};
+  try {
+    const v = JSON.parse(t);
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : t;
+  } catch {
+    return t;
+  }
+}
+
+function displayArgs(name: string, args: Record<string, any>, input: string): string {
+  const shown = Object.keys(args).length === 1 && 'input' in args ? input : JSON.stringify(args);
+  const masked = name === 'browser_fill_ref' && /password|pwd|pin/i.test(getMapEntry(Number(args.ref))?.label ?? '')
+    ? shown.replace(/("text"\s*:\s*")[^"]*"/, '$1•••"')
+    : shown;
+  return masked.length > 300 ? `${masked.slice(0, 300)}…` : masked;
+}
+
+function lastMessagePreview(messages: ChatMessage[]): string {
+  const m = messages[messages.length - 1];
+  if (!m) return '';
+  if (typeof m.content === 'string') return m.content.slice(0, 1500);
+  return (m.content ?? []).map(p => (p.type === 'text' ? p.text : '[image]')).join('\n').slice(0, 1500);
+}
+
+/** Keep only user/assistant text from previous tasks (no tool-call debris). */
+function sanitizeHistory(initial: any[], prompt: string): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const m of initial ?? []) {
+    if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
+    if (typeof m.content !== 'string' || !m.content.trim()) continue;
+    if (m.role === 'assistant' && /<tool>/.test(m.content)) continue;
+    out.push({ role: m.role, content: m.content });
+  }
+  // The current prompt is sent separately as the task message
+  const last = out[out.length - 1];
+  if (last && last.role === 'user' && last.content === prompt) out.pop();
+  return out;
+}
+
+function buildTaskMessage(prompt: string, hints: string[] | undefined, lang: Lang): string {
+  const extra = (hints ?? []).filter(h => h && h.trim());
+  if (!extra.length) return prompt;
+  const label = lang === 'en' ? 'Useful context' : 'Contesto utile';
+  return `${prompt}\n\n[${label}]\n${extra.join('\n\n')}`;
+}
+
+const RUN_STRINGS = {
+  it: {
+    switchedToXml: 'ℹ️ L\'endpoint non supporta le tool call native: passo al protocollo testuale.',
+    emptyResponse: 'La tua risposta precedente era vuota (probabilmente tutto è finito nel ragionamento). Il compito NON è finito: continua chiamando un tool, oppure scrivi il risultato finale.',
+    emptyFailure: 'Errore: il modello ha restituito più risposte vuote consecutive. Prova un profilo con meno ragionamento o un output massimo più alto.',
+    malformedCall: 'Errore di formato: la chiamata tool non è leggibile. Usa esattamente <tool>nome</tool><input>{...}</input>.',
+    skippedAfterError: 'Non eseguito: la chiamata precedente è fallita. Rivaluta con il risultato ottenuto.',
+    skippedAfterPageChange: 'Non eseguito: la pagina è cambiata con l\'azione precedente. Decidi il prossimo passo sulla nuova osservazione.',
+    skippedAfterRejection: 'Non eseguito: l\'utente ha rifiutato l\'azione precedente.',
+    cancelled: 'Non eseguito: task annullato.',
+    cancelledByUser: 'Task annullato dall\'utente.',
+    approvalNeeded: 'Serve la tua conferma',
+    approved: 'Azione approvata, eseguo.',
+    rejected: 'Azione rifiutata.',
+    rejectedForModel: 'Action rejected by the user. Do not retry it: ask the user how to proceed or choose another way.',
+    sessionLost: 'La sessione di controllo della pagina è stata persa: chiedi all\'utente di riprovare o apri un nuovo tab con browser_tab.',
+    stepRetry: (s: number, a: number, m: number) => `⚠️ Errore di rete/LLM al passo ${s}, nuovo tentativo ${a}/${m}…`,
+    maxSteps: (n: number, plan: PlanStep[]) => `Mi sono fermato dopo ${n} passi senza completare il compito.${plan.length ? ` Stato del piano: ${plan.map((p, i) => `${i + 1}. ${p.title} [${p.status}]`).join('; ')}.` : ''} Dimmi se devo continuare.`,
+    fatal: (m: string) => `Errore: ${m}`,
+  },
+  en: {
+    switchedToXml: 'ℹ️ The endpoint does not support native tool calls: switching to the text protocol.',
+    emptyResponse: 'Your previous response was empty (probably everything went into reasoning). The task is NOT finished: continue by calling a tool, or write the final result.',
+    emptyFailure: 'Error: the model returned several empty responses in a row. Try a profile with less reasoning or a higher max output.',
+    malformedCall: 'Format error: the tool call could not be parsed. Use exactly <tool>name</tool><input>{...}</input>.',
+    skippedAfterError: 'Not executed: the previous call failed. Re-evaluate with its result.',
+    skippedAfterPageChange: 'Not executed: the page changed after the previous action. Decide the next step on the new observation.',
+    skippedAfterRejection: 'Not executed: the user rejected the previous action.',
+    cancelled: 'Not executed: task cancelled.',
+    cancelledByUser: 'Task cancelled by the user.',
+    approvalNeeded: 'Your confirmation is needed',
+    approved: 'Action approved, executing.',
+    rejected: 'Action rejected.',
+    rejectedForModel: 'Action rejected by the user. Do not retry it: ask the user how to proceed or choose another way.',
+    sessionLost: 'The page control session was lost: ask the user to retry or open a new tab with browser_tab.',
+    stepRetry: (s: number, a: number, m: number) => `⚠️ Network/LLM error at step ${s}, retry ${a}/${m}…`,
+    maxSteps: (n: number, plan: PlanStep[]) => `I stopped after ${n} steps without completing the task.${plan.length ? ` Plan status: ${plan.map((p, i) => `${i + 1}. ${p.title} [${p.status}]`).join('; ')}.` : ''} Tell me whether to continue.`,
+    fatal: (m: string) => `Error: ${m}`,
+  },
+};
