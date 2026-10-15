@@ -1,5 +1,5 @@
 // Define message types
-export type MessageType = 'system' | 'llm' | 'screenshot';
+export type MessageType = 'system' | 'llm' | 'screenshot' | 'debug';
 
 export interface Message {
   type: MessageType;
@@ -10,6 +10,8 @@ export interface Message {
   imageData?: string;
   mediaType?: string;
   structuredResult?: unknown;
+  /** For debug messages: short label shown in the block header */
+  debugLabel?: string;
 }
 
 // Chrome message types

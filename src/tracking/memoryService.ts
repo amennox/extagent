@@ -8,18 +8,62 @@ export interface AgentMemory {
   taskDescription: string;  // Short description of what was accomplished
   toolSequence: string[];  // Array of tool calls with their inputs
   createdAt: number;  // Timestamp
+  validated?: boolean;  // Operator-validated memories rank first
+  useCount?: number;    // How many times the memory has been reused
+  /** Linked auto-generated recording — makes the memory deterministically replayable */
+  recordingName?: string;
 }
 
+/**
+ * Unified storage record shared with agent/MemoryManager (options UI).
+ * Single source of truth: chrome.storage.local under STORAGE_KEY.
+ */
+interface StoredMemory {
+  id: string;
+  domain: string;
+  pattern: string;
+  toolSequence?: string[];
+  selectors?: Record<string, string>;
+  validated: boolean;
+  createdAt: string;   // ISO
+  updatedAt: string;   // ISO
+  useCount: number;
+  recordingName?: string;
+}
+
+const STORAGE_KEY = 'agent_memories_v2';
+/** Max memories kept per domain: beyond this the lowest-ranked provisional ones are pruned. */
+const MAX_MEMORIES_PER_DOMAIN = 15;
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+/** A provisional memory reused successfully this many times gets auto-validated. */
+const AUTO_VALIDATE_USES = 2;
+
+function toAgentMemory(m: StoredMemory): AgentMemory {
+  return {
+    id: Number(m.id),
+    domain: m.domain,
+    taskDescription: m.pattern,
+    toolSequence: m.toolSequence ?? [],
+    createdAt: Date.parse(m.createdAt) || 0,
+    validated: m.validated,
+    useCount: m.useCount,
+    recordingName: m.recordingName,
+  };
+}
+
+/**
+ * MemoryService — persistence for agent memories.
+ *
+ * NOTE: previously IndexedDB-backed; now persists to the SAME
+ * chrome.storage.local key used by agent/MemoryManager, so agent tools,
+ * options UI, default seeding and reflection all share one store.
+ * The public API is unchanged.
+ */
 export class MemoryService {
   private static instance: MemoryService;
-  private db: IDBDatabase | null = null;
-  private readonly DB_NAME = 'infinit-agent-memories';
-  private readonly STORE_NAME = 'memories';
-  private DB_VERSION = 1; // Not readonly so we can increment it if needed
-  private isInitialized = false;
   private hasImportedDefaultMemories = false;
 
-  // Singleton pattern
   public static getInstance(): MemoryService {
     if (!MemoryService.instance) {
       MemoryService.instance = new MemoryService();
@@ -28,537 +72,237 @@ export class MemoryService {
   }
 
   private constructor() {
-    // Private constructor to enforce singleton pattern
+    // Singleton
   }
 
-  /**
-   * Check if the object store exists and create it if it doesn't
-   */
-  private async ensureObjectStoreExists(): Promise<void> {
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    // Check if the object store exists
-    if (!Array.from(this.db.objectStoreNames).includes(this.STORE_NAME)) {
-      logWithTimestamp(`Object store ${this.STORE_NAME} does not exist, recreating database`, 'warn');
-
-      // Close the current database
-      this.db.close();
-      this.db = null;
-      this.isInitialized = false;
-
-      // Delete and recreate the database with a higher version
-      return new Promise((resolve, reject) => {
-        const deleteRequest = indexedDB.deleteDatabase(this.DB_NAME);
-
-        deleteRequest.onsuccess = () => {
-          logWithTimestamp(`Database ${this.DB_NAME} deleted successfully, recreating`);
-
-          // Reinitialize with the same version
-          this.init().then(resolve).catch(reject);
-        };
-
-        deleteRequest.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error deleting database: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      });
-    }
-
+  /** Kept for API compatibility — storage needs no async initialization. */
+  public async init(): Promise<void> {
     return Promise.resolve();
   }
 
-  // Initialize the database
-  public async init(): Promise<void> {
-    if (this.isInitialized) {
-      logWithTimestamp(`MemoryService already initialized, skipping initialization`);
-      return;
-    }
-
-    logWithTimestamp(`Initializing MemoryService with database ${this.DB_NAME}`);
-
-    // Check if IndexedDB is available
-    if (typeof indexedDB === 'undefined') {
-      logWithTimestamp(`IndexedDB is not available in this environment`, 'error');
-      throw new Error('IndexedDB is not available in this environment');
-    }
-
-    return new Promise((resolve, reject) => {
-      try {
-        logWithTimestamp(`Opening IndexedDB database ${this.DB_NAME} (version ${this.DB_VERSION})`);
-        const request = indexedDB.open(this.DB_NAME, this.DB_VERSION);
-
-        request.onupgradeneeded = (event) => {
-          logWithTimestamp(`Database upgrade needed for ${this.DB_NAME}`);
-          const db = (event.target as IDBOpenDBRequest).result;
-
-          // Create the object store if it doesn't exist
-          if (!db.objectStoreNames.contains(this.STORE_NAME)) {
-            logWithTimestamp(`Creating object store ${this.STORE_NAME}`);
-            const store = db.createObjectStore(this.STORE_NAME, {
-              keyPath: 'id',
-              autoIncrement: true
-            });
-
-            // Create an index on the domain field for quick lookups
-            store.createIndex('domain', 'domain', { unique: false });
-            store.createIndex('createdAt', 'createdAt', { unique: false });
-
-            logWithTimestamp(`Created ${this.STORE_NAME} object store in ${this.DB_NAME} database`);
-          } else {
-            logWithTimestamp(`Object store ${this.STORE_NAME} already exists`);
-          }
-        };
-
-        request.onsuccess = (event) => {
-          this.db = (event.target as IDBOpenDBRequest).result;
-          this.isInitialized = true;
-          logWithTimestamp(`Successfully opened ${this.DB_NAME} database`);
-
-          // Log the object stores in the database
-          const storeNames = Array.from(this.db.objectStoreNames);
-          logWithTimestamp(`Database contains object stores: ${storeNames.join(', ') || 'none'}`);
-
-          // Check if the object store exists, and if not, recreate the database
-          if (!storeNames.includes(this.STORE_NAME)) {
-            logWithTimestamp(`Object store ${this.STORE_NAME} not found, will recreate database`, 'warn');
-
-            // Close the database
-            this.db.close();
-            this.db = null;
-            this.isInitialized = false;
-
-            // Delete and recreate the database with a higher version
-            const deleteRequest = indexedDB.deleteDatabase(this.DB_NAME);
-
-            deleteRequest.onsuccess = () => {
-              logWithTimestamp(`Database ${this.DB_NAME} deleted successfully, recreating`);
-
-              // No need to increment version if we're deleting and recreating the database
-              // The database will be created with the current version
-
-              // Reinitialize with the same version
-              this.init().then(resolve).catch(reject);
-            };
-
-            deleteRequest.onerror = (event) => {
-              const error = (event.target as IDBRequest).error;
-              logWithTimestamp(`Error deleting database: ${error?.message || 'Unknown error'}`, 'error');
-              reject(error);
-            };
-
-            return; // Don't resolve yet, wait for the recursive call to complete
-          }
-
-          resolve();
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBOpenDBRequest).error;
-          logWithTimestamp(`Error opening ${this.DB_NAME} database: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-
-        request.onblocked = () => {
-          logWithTimestamp(`Database request blocked for ${this.DB_NAME}`, 'warn');
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception opening ${this.DB_NAME} database: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
+  private async _loadAll(): Promise<StoredMemory[]> {
+    const result = await chrome.storage.local.get(STORAGE_KEY);
+    return (result[STORAGE_KEY] as StoredMemory[]) ?? [];
   }
 
-  // Ensure the database is initialized before any operation
-  private async ensureInitialized(): Promise<void> {
-    if (!this.isInitialized) {
-      await this.init();
-    }
-
-    // Make sure the object store exists
-    await this.ensureObjectStoreExists();
+  private async _saveAll(all: StoredMemory[]): Promise<void> {
+    await chrome.storage.local.set({ [STORAGE_KEY]: all });
   }
 
   /**
-   * Check if a similar memory already exists
-   * @param memory The memory to check for duplicates
-   * @returns The ID of the existing memory if found, null otherwise
+   * Check if a similar memory already exists (same domain + task description).
    */
   public async findSimilarMemory(memory: AgentMemory): Promise<number | null> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    // Normalize the domain
     const normalizedDomain = normalizeDomain(memory.domain);
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readonly');
-        const store = transaction.objectStore(this.STORE_NAME);
-        const index = store.index('domain');
-
-        // Get all memories for this domain
-        const request = index.getAll(normalizedDomain);
-
-        request.onsuccess = (event) => {
-          const memories = (event.target as IDBRequest<AgentMemory[]>).result;
-
-          // Check if any existing memory has the same task description
-          const similarMemory = memories.find(m =>
-            m.taskDescription.toLowerCase() === memory.taskDescription.toLowerCase()
-          );
-
-          if (similarMemory && similarMemory.id) {
-            logWithTimestamp(`Found similar memory with ID ${similarMemory.id} for task "${memory.taskDescription}"`);
-            resolve(similarMemory.id);
-          } else {
-            resolve(null);
-          }
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error checking for similar memories: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception checking for similar memories: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
+    const all = await this._loadAll();
+    const similar = all.find(m =>
+      m.domain === normalizedDomain &&
+      m.pattern.toLowerCase() === memory.taskDescription.toLowerCase()
+    );
+    if (similar) {
+      const id = Number(similar.id);
+      if (!isNaN(id)) return id;
+    }
+    return null;
   }
 
-  /**
-   * Update an existing memory
-   * @param id The ID of the memory to update
-   * @param memory The updated memory data
-   * @returns Promise resolving to the ID of the updated memory
-   */
+  /** Update an existing memory by numeric ID. */
   public async updateMemory(id: number, memory: Partial<AgentMemory>): Promise<number> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
+    const all = await this._loadAll();
+    const idx = all.findIndex(m => m.id === String(id));
+    if (idx < 0) {
+      throw new Error(`Memory with ID ${id} not found`);
     }
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(this.STORE_NAME);
-
-        // First get the existing memory
-        const getRequest = store.get(id);
-
-        getRequest.onsuccess = (event) => {
-          const existingMemory = (event.target as IDBRequest<AgentMemory>).result;
-
-          if (!existingMemory) {
-            reject(new Error(`Memory with ID ${id} not found`));
-            return;
-          }
-
-          // Update the memory with new data
-          const updatedMemory = {
-            ...existingMemory,
-            ...memory,
-            // Always update the timestamp
-            createdAt: Date.now()
-          };
-
-          // Put the updated memory back
-          const putRequest = store.put(updatedMemory);
-
-          putRequest.onsuccess = () => {
-            logWithTimestamp(`Successfully updated memory with ID ${id}`);
-            resolve(id);
-          };
-
-          putRequest.onerror = (event) => {
-            const error = (event.target as IDBRequest).error;
-            logWithTimestamp(`Error updating memory: ${error?.message || 'Unknown error'}`, 'error');
-            reject(error);
-          };
-        };
-
-        getRequest.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error getting memory for update: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception updating memory: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
+    const existing = all[idx];
+    all[idx] = {
+      ...existing,
+      domain: memory.domain !== undefined ? normalizeDomain(memory.domain) : existing.domain,
+      pattern: memory.taskDescription ?? existing.pattern,
+      toolSequence: memory.toolSequence ?? existing.toolSequence,
+      validated: memory.validated ?? existing.validated,
+      useCount: memory.useCount ?? existing.useCount,
+      recordingName: memory.recordingName ?? existing.recordingName,
+      updatedAt: new Date().toISOString(),
+    };
+    await this._saveAll(all);
+    logWithTimestamp(`Successfully updated memory with ID ${id}`);
+    return id;
   }
 
-  // Store a new memory
+  /** Store a new memory (deduplicated on domain + task description). */
   public async storeMemory(memory: AgentMemory): Promise<number> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      logWithTimestamp(`Cannot store memory: Database not initialized`, 'error');
-      throw new Error('Database not initialized');
-    }
-
-    // Normalize the domain before storing
     memory.domain = normalizeDomain(memory.domain);
 
-    // Check if a similar memory already exists
     const existingId = await this.findSimilarMemory(memory);
-
-    // If a similar memory exists, update it instead of creating a new one
     if (existingId !== null) {
       logWithTimestamp(`Similar memory found with ID ${existingId}, updating instead of creating duplicate`);
       return this.updateMemory(existingId, memory);
     }
 
-    logWithTimestamp(`No similar memory found, storing new memory for domain ${memory.domain}`);
+    const all = await this._loadAll();
+    const id = Date.now() + Math.floor(Math.random() * 1000);
+    const nowIso = new Date(memory.createdAt || Date.now()).toISOString();
+    all.push({
+      id: String(id),
+      domain: memory.domain,
+      pattern: memory.taskDescription,
+      toolSequence: memory.toolSequence,
+      validated: memory.validated ?? false,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      useCount: memory.useCount ?? 0,
+      recordingName: memory.recordingName,
+    });
 
-    return new Promise((resolve, reject) => {
-      try {
-        logWithTimestamp(`Creating transaction for ${this.STORE_NAME}`);
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readwrite');
-
-        transaction.onerror = (event) => {
-          const error = (event.target as IDBTransaction).error;
-          logWithTimestamp(`Transaction error: ${error?.message || 'Unknown error'}`, 'error');
-        };
-
-        transaction.onabort = () => {
-          logWithTimestamp(`Transaction aborted`, 'warn');
-        };
-
-        const store = transaction.objectStore(this.STORE_NAME);
-
-        // Add timestamp if not provided
-        if (!memory.createdAt) {
-          memory.createdAt = Date.now();
+    // Per-domain cap: prune the lowest-ranked provisional memories beyond the cap
+    const domainMemories = all.filter(m => m.domain === memory.domain);
+    if (domainMemories.length > MAX_MEMORIES_PER_DOMAIN) {
+      const pruneCount = domainMemories.length - MAX_MEMORIES_PER_DOMAIN;
+      const pruneCandidates = domainMemories
+        .filter(m => !m.validated && m.id !== String(id))
+        .sort((a, b) => (a.useCount ?? 0) - (b.useCount ?? 0) ||
+          (Date.parse(a.updatedAt) || 0) - (Date.parse(b.updatedAt) || 0));
+      const toPrune = new Set(pruneCandidates.slice(0, pruneCount).map(m => m.id));
+      if (toPrune.size > 0) {
+        logWithTimestamp(`Domain ${memory.domain} over memory cap: pruning ${toPrune.size} provisional memories`);
+        for (let i = all.length - 1; i >= 0; i--) {
+          if (toPrune.has(all[i].id)) all.splice(i, 1);
         }
-
-        logWithTimestamp(`Adding memory to store: ${JSON.stringify(memory).substring(0, 100)}...`);
-        const request = store.add(memory);
-
-        request.onsuccess = (event) => {
-          const id = (event.target as IDBRequest<number>).result;
-          logWithTimestamp(`Successfully stored memory with ID ${id} for domain ${memory.domain}`);
-          resolve(id);
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error storing memory: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception storing memory: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
       }
-    });
-  }
-
-  // Retrieve memories by domain
-  public async getMemoriesByDomain(domain: string): Promise<AgentMemory[]> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
     }
 
-    // Normalize the domain for consistent lookup
-    const normalizedDomain = normalizeDomain(domain);
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readonly');
-        const store = transaction.objectStore(this.STORE_NAME);
-        const index = store.index('domain');
-
-        const request = index.getAll(normalizedDomain);
-
-        request.onsuccess = (event) => {
-          const memories = (event.target as IDBRequest<AgentMemory[]>).result;
-          logWithTimestamp(`Retrieved ${memories.length} memories for domain ${domain}`);
-          resolve(memories);
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error retrieving memories: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception retrieving memories: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
-  }
-
-  // Get all memories
-  public async getAllMemories(): Promise<AgentMemory[]> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readonly');
-        const store = transaction.objectStore(this.STORE_NAME);
-
-        const request = store.getAll();
-
-        request.onsuccess = (event) => {
-          const memories = (event.target as IDBRequest<AgentMemory[]>).result;
-          logWithTimestamp(`Retrieved ${memories.length} total memories`);
-          resolve(memories);
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error retrieving all memories: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception retrieving all memories: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
-  }
-
-  // Delete a memory by ID
-  public async deleteMemory(id: number): Promise<void> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(this.STORE_NAME);
-
-        const request = store.delete(id);
-
-        request.onsuccess = () => {
-          logWithTimestamp(`Successfully deleted memory with ID ${id}`);
-          resolve();
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error deleting memory: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception deleting memory: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
-  }
-
-  // Clear all memories
-  public async clearMemories(): Promise<void> {
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    return new Promise((resolve, reject) => {
-      try {
-        const transaction = this.db!.transaction([this.STORE_NAME], 'readwrite');
-        const store = transaction.objectStore(this.STORE_NAME);
-
-        const request = store.clear();
-
-        request.onsuccess = () => {
-          logWithTimestamp(`Successfully cleared all memories`);
-          resolve();
-        };
-
-        request.onerror = (event) => {
-          const error = (event.target as IDBRequest).error;
-          logWithTimestamp(`Error clearing memories: ${error?.message || 'Unknown error'}`, 'error');
-          reject(error);
-        };
-      } catch (error) {
-        logWithTimestamp(`Exception clearing memories: ${error instanceof Error ? error.message : String(error)}`, 'error');
-        reject(error);
-      }
-    });
+    await this._saveAll(all);
+    logWithTimestamp(`Successfully stored memory with ID ${id} for domain ${memory.domain}`);
+    return id;
   }
 
   /**
-   * Import default memories from the bundled JSON file
-   * This should only be called once during initial database setup
-   * @returns Promise resolving to the number of imported memories
+   * Positive outcome/feedback: increment useCount on the given memories and
+   * auto-validate the provisional ones reused successfully enough times
+   * (or immediately when `forceValidate` — explicit 👍).
+   */
+  public async reinforceMemories(ids: number[], forceValidate = false): Promise<void> {
+    if (!ids.length) return;
+    const idSet = new Set(ids.map(String));
+    const all = await this._loadAll();
+    let touched = false;
+    for (const m of all) {
+      if (!idSet.has(m.id)) continue;
+      m.useCount = (m.useCount ?? 0) + 1;
+      if (forceValidate || m.useCount >= AUTO_VALIDATE_USES) m.validated = true;
+      m.updatedAt = new Date().toISOString();
+      touched = true;
+    }
+    if (touched) await this._saveAll(all);
+  }
+
+  /**
+   * Negative outcome/feedback: delete provisional memories, weaken validated
+   * ones (a validated memory that keeps failing eventually gets removed).
+   */
+  public async penalizeMemories(ids: number[]): Promise<void> {
+    if (!ids.length) return;
+    const idSet = new Set(ids.map(String));
+    const all = await this._loadAll();
+    const kept: StoredMemory[] = [];
+    let touched = false;
+    for (const m of all) {
+      if (!idSet.has(m.id)) { kept.push(m); continue; }
+      touched = true;
+      if (!m.validated) continue; // provisional + negative signal → drop
+      m.useCount = Math.max(0, (m.useCount ?? 0) - 1);
+      if (m.useCount === 0) m.validated = false; // demote back to provisional
+      m.updatedAt = new Date().toISOString();
+      kept.push(m);
+    }
+    if (touched) await this._saveAll(kept);
+  }
+
+  /**
+   * Retrieve memories by domain, ranked: validated first, then by useCount,
+   * then most recent. Unused memories older than 30 days are filtered out.
+   */
+  public async getMemoriesByDomain(domain: string): Promise<AgentMemory[]> {
+    const normalizedDomain = normalizeDomain(domain);
+    const all = await this._loadAll();
+    const now = Date.now();
+
+    const relevant = all.filter(m => {
+      if (m.domain !== normalizedDomain) return false;
+      const lastTouch = Date.parse(m.updatedAt) || Date.parse(m.createdAt) || 0;
+      // Decay: unused provisional memories after 30 days, validated after 90
+      if ((m.useCount ?? 0) === 0 && now - (Date.parse(m.createdAt) || 0) > THIRTY_DAYS_MS) return false;
+      if (m.validated && now - lastTouch > NINETY_DAYS_MS) return false;
+      return true;
+    });
+
+    relevant.sort((a, b) => {
+      if (a.validated !== b.validated) return a.validated ? -1 : 1;
+      if ((b.useCount ?? 0) !== (a.useCount ?? 0)) return (b.useCount ?? 0) - (a.useCount ?? 0);
+      return (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
+    });
+
+    logWithTimestamp(`Retrieved ${relevant.length} memories for domain ${domain}`);
+    return relevant.map(toAgentMemory);
+  }
+
+  /** Get all memories. */
+  public async getAllMemories(): Promise<AgentMemory[]> {
+    const all = await this._loadAll();
+    logWithTimestamp(`Retrieved ${all.length} total memories`);
+    return all.map(toAgentMemory);
+  }
+
+  /** Delete a memory by numeric ID. */
+  public async deleteMemory(id: number): Promise<void> {
+    const all = await this._loadAll();
+    await this._saveAll(all.filter(m => m.id !== String(id)));
+    logWithTimestamp(`Successfully deleted memory with ID ${id}`);
+  }
+
+  /** Clear all memories. */
+  public async clearMemories(): Promise<void> {
+    await this._saveAll([]);
+    logWithTimestamp(`Successfully cleared all memories`);
+  }
+
+  /**
+   * Import default memories from the bundled JSON file (only when the store
+   * is empty, typically on fresh install).
    */
   public async importDefaultMemories(): Promise<number> {
-    // Skip if we've already imported default memories
     if (this.hasImportedDefaultMemories) {
       logWithTimestamp('Default memories already imported, skipping');
       return 0;
     }
 
-    await this.ensureInitialized();
-
-    if (!this.db) {
-      throw new Error('Database not initialized');
-    }
-
-    try {
-      // Check if the database is empty before importing
-      const existingMemories = await this.getAllMemories();
-
-      if (existingMemories.length > 0) {
-        logWithTimestamp('Database already contains memories, skipping default import');
-        this.hasImportedDefaultMemories = true;
-        return 0;
-      }
-
-      // Import the default memories
-      logWithTimestamp('Importing default memories...');
-
-      // Use the statically imported default memories
-      const defaultMemories: AgentMemory[] = defaultMemoriesData as AgentMemory[];
-
-      if (!Array.isArray(defaultMemories) || defaultMemories.length === 0) {
-        logWithTimestamp('No default memories found or invalid format', 'warn');
-        this.hasImportedDefaultMemories = true;
-        return 0;
-      }
-
-      logWithTimestamp(`Found ${defaultMemories.length} default memories to import`);
-
-      // Store each memory, skipping duplicates
-      let importedCount = 0;
-      for (const memory of defaultMemories) {
-        try {
-          // Remove any existing ID to ensure we don't overwrite user memories
-          delete memory.id;
-
-          // Store the memory (this will check for duplicates)
-          await this.storeMemory(memory);
-          importedCount++;
-        } catch (error) {
-          logWithTimestamp(`Error importing memory: ${error instanceof Error ? error.message : String(error)}`, 'warn');
-        }
-      }
-
-      logWithTimestamp(`Successfully imported ${importedCount} default memories`);
+    const existing = await this.getAllMemories();
+    if (existing.length > 0) {
+      logWithTimestamp('Store already contains memories, skipping default import');
       this.hasImportedDefaultMemories = true;
-      return importedCount;
-    } catch (error) {
-      logWithTimestamp(`Error importing default memories: ${error instanceof Error ? error.message : String(error)}`, 'error');
       return 0;
     }
+
+    const defaultMemories: AgentMemory[] = defaultMemoriesData as AgentMemory[];
+    if (!Array.isArray(defaultMemories) || defaultMemories.length === 0) {
+      logWithTimestamp('No default memories found or invalid format', 'warn');
+      this.hasImportedDefaultMemories = true;
+      return 0;
+    }
+
+    let importedCount = 0;
+    for (const memory of defaultMemories) {
+      try {
+        delete memory.id;
+        await this.storeMemory(memory);
+        importedCount++;
+      } catch (error) {
+        logWithTimestamp(`Error importing memory: ${error instanceof Error ? error.message : String(error)}`, 'warn');
+      }
+    }
+
+    logWithTimestamp(`Successfully imported ${importedCount} default memories`);
+    this.hasImportedDefaultMemories = true;
+    return importedCount;
   }
 }

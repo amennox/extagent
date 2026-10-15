@@ -95,7 +95,7 @@ export class TokenTrackingService {
   }
 
   private updateCost(): void {
-    // InfinitAgent uses a local/private openai-compatible endpoint — cost is always 0
+    // DomMotion uses a local/private openai-compatible endpoint — cost is always 0
     this.cost = 0;
   }
 

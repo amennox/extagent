@@ -268,7 +268,15 @@ export type BackgroundMessage =
   | DeleteRecordingMessage
   | RecordingStepMessage
   | PlayRecordingMessage
-  | ExecuteSkillPromptMessage;
+  | ExecuteSkillPromptMessage
+  | TaskFeedbackMessage;
+
+export interface TaskFeedbackMessage {
+  action: 'taskFeedback';
+  positive: boolean;
+  windowId?: number;
+  tabId?: number;
+}
 
 // New message types for enhanced tab management
 export interface TabStatusChangedMessage {

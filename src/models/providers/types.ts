@@ -29,15 +29,43 @@ export interface FunctionMapping {
   profileId: string;
 }
 
+/** OpenAI-standard reasoning effort levels. */
+export type ReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
+
 export interface ModelProfile {
   id: string;
   name: string;
   modelId: string;
-  enableThinking: boolean;
-  thinkingBudget?: number;
+  /** OpenAI-standard reasoning effort. Undefined = reasoning off. */
+  reasoningEffort?: ReasoningEffort;
+  /**
+   * JSON string merged into the request body at call time. Escape hatch for
+   * endpoints that need non-standard params (e.g. vLLM
+   * `{"chat_template_kwargs": {"enable_thinking": false}}` for Qwen3).
+   */
+  extraBody?: string;
+  /**
+   * Also send the tool schemas as native OpenAI function calling (default
+   * false). The canonical protocol is the XML format described in the system
+   * prompt; sending BOTH confuses models (mixed-format tool calls) and bloats
+   * the server-side prompt with duplicated schemas.
+   */
+  nativeToolCalling?: boolean;
   contextWindowSize?: number;
   temperature?: number;
   maxTokens?: number;
+  /** @deprecated Legacy Qwen/DashScope-style flag, auto-migrated to reasoningEffort. */
+  enableThinking?: boolean;
+  /** @deprecated Legacy, no longer sent. */
+  thinkingBudget?: number;
+}
+
+/** Migrate legacy thinking flags to the standard reasoningEffort field. */
+export function migrateProfile(p: ModelProfile): ModelProfile {
+  if (p.reasoningEffort === undefined && p.enableThinking) {
+    return { ...p, reasoningEffort: 'medium' };
+  }
+  return p;
 }
 
 export interface ProviderOptions {
@@ -66,7 +94,11 @@ export interface StreamChunk {
 export type ApiStream = AsyncGenerator<StreamChunk, void, unknown>;
 
 export interface LLMProvider {
-  createMessage(systemPrompt: string, messages: any[], tools?: any[], profile?: ModelProfile): ApiStream;
+  /**
+   * @param requestOverrides Extra params merged into the request body for this
+   * single call (e.g. `{ response_format: { type: "json_object" } }`).
+   */
+  createMessage(systemPrompt: string, messages: any[], tools?: any[], profile?: ModelProfile, requestOverrides?: Record<string, unknown>): ApiStream;
   getModel(): { id: string; info: ModelInfo };
   getDefaultProfile(): ModelProfile | null;
 }

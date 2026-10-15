@@ -5,6 +5,7 @@ node_modules/
 # Build output
 dist/
 build/
+logs/
 
 # Environment variables
 .env
@@ -32,9 +33,14 @@ pnpm-debug.log*
 
 # Testing
 coverage/
+design/
 
 # Misc
 .cache/
 .temp/
 api_keys.txt
 .env
+
+# Markdown files — keep only README.md
+*.md
+!README.md

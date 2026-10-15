@@ -52,7 +52,7 @@ describe('PromptManager', () => {
     it('should handle empty tools array', async () => {
       const emptyPm = new PromptManager([]);
       const systemPrompt = await emptyPm.getSystemPrompt('it');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
     });
 
     it('should handle null/undefined tools gracefully', () => {
@@ -106,13 +106,13 @@ describe('PromptManager', () => {
   describe('getSystemPrompt', () => {
     it('restituisce il prompt italiano di default quando lang="it"', async () => {
       const systemPrompt = await promptManager.getSystemPrompt('it');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
       expect(systemPrompt).toContain('Sequenza canonica');
     });
 
     it('restituisce il prompt inglese di default quando lang="en"', async () => {
       const systemPrompt = await promptManager.getSystemPrompt('en');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
       expect(systemPrompt).toContain('Canonical Sequence');
     });
 
@@ -125,7 +125,7 @@ describe('PromptManager', () => {
     it('usa il default se lo storage restituisce stringa vuota', async () => {
       (chrome.storage.local.get as jest.Mock).mockResolvedValueOnce({ customSystemPrompt: '' });
       const systemPrompt = await promptManager.getSystemPrompt('it');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
       expect(systemPrompt).not.toContain('custom system prompt text');
     });
 
@@ -134,9 +134,9 @@ describe('PromptManager', () => {
       expect(systemPrompt).toContain('lookup_memories');
     });
 
-    it('il prompt italiano contiene istruzione browser_accessible_tree', async () => {
+    it('il prompt italiano contiene istruzione browser_interactive_map', async () => {
       const systemPrompt = await promptManager.getSystemPrompt('it');
-      expect(systemPrompt).toContain('browser_accessible_tree');
+      expect(systemPrompt).toContain('browser_interactive_map');
     });
 
     it('should include tool descriptions in the prompt', async () => {
@@ -148,7 +148,7 @@ describe('PromptManager', () => {
     it('should include canonical sequence instructions', async () => {
       const systemPrompt = await promptManager.getSystemPrompt('it');
       expect(systemPrompt).toContain('lookup_memories');
-      expect(systemPrompt).toContain('browser_accessible_tree');
+      expect(systemPrompt).toContain('browser_interactive_map');
     });
 
     it('should include memory format section', async () => {
@@ -198,7 +198,7 @@ describe('PromptManager', () => {
 
     it('should handle undefined navigator gracefully (no throw)', async () => {
       Object.defineProperty(global, 'navigator', { value: undefined, writable: true });
-      await expect(promptManager.getSystemPrompt('it')).resolves.toContain('InfinitAgent');
+      await expect(promptManager.getSystemPrompt('it')).resolves.toContain('DomMotion');
       Object.defineProperty(global, 'navigator', { value: mockNavigatorMac, writable: true });
     });
 
@@ -257,7 +257,7 @@ describe('PromptManager', () => {
     it('should handle empty tools update', async () => {
       promptManager.updateTools([]);
       const systemPrompt = await promptManager.getSystemPrompt('it');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
     });
 
     it('should preserve page context after tools update', async () => {
@@ -278,7 +278,7 @@ describe('PromptManager', () => {
         { name: 'search_submit', description: 'Submit search form', func: jest.fn() as any }
       ]);
       const systemPrompt = await promptManager.getSystemPrompt('it');
-      expect(systemPrompt).toContain('InfinitAgent');
+      expect(systemPrompt).toContain('DomMotion');
       expect(systemPrompt).toContain('CURRENT PAGE CONTEXT');
       expect(systemPrompt).toContain('https://google.com');
       expect(systemPrompt).toContain('search_input');

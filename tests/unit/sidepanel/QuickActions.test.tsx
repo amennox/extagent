@@ -9,13 +9,11 @@ jest.mock('../../../src/i18n', () => ({
 
 // Mock useQuickActions
 const mockStartSmartPaste = jest.fn().mockResolvedValue(undefined);
-const mockAnalyzePageForExtraction = jest.fn().mockResolvedValue(undefined);
 const mockStartSmartExtract = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('../../../src/sidepanel/hooks/useQuickActions', () => ({
   useQuickActions: () => ({
     startSmartPaste: mockStartSmartPaste,
-    analyzePageForExtraction: mockAnalyzePageForExtraction,
     startSmartExtract: mockStartSmartExtract,
   }),
 }));
@@ -52,18 +50,13 @@ describe('QuickActions', () => {
     expect(screen.getByTestId('smart-paste-panel')).toBeInTheDocument();
   });
 
-  it('click Smart Extract mostra loading poi proposta', async () => {
+  it('click Smart Extract apre SmartExtractPanel', () => {
     render(<QuickActions executePrompt={mockExecutePrompt} isProcessing={false} />);
 
     fireEvent.click(screen.getByTestId('btn-smart-extract'));
 
-    // Loading state should appear immediately
-    expect(screen.getByTestId('smart-extract-loading')).toBeInTheDocument();
-
-    // After analyzePageForExtraction resolves, ready state appears
-    await waitFor(() => {
-      expect(screen.getByTestId('smart-extract-ready')).toBeInTheDocument();
-    });
+    expect(screen.getByTestId('smart-extract-format')).toBeInTheDocument();
+    expect(screen.getByTestId('smart-extract-submit')).toBeInTheDocument();
   });
 
   it('click Automate apre RecordingPanel', () => {
@@ -119,33 +112,19 @@ describe('SmartExtractPanel', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    mockAnalyzePageForExtraction.mockResolvedValue(undefined);
   });
 
-  it('mostra la proposta quando analyzePageForExtraction ritorna', async () => {
-    render(
-      <SmartExtractPanel
-        analyzePageForExtraction={mockAnalyzePageForExtraction}
-        onExtract={mockOnExtract}
-        onClose={mockOnClose}
-      />
-    );
+  it('mostra le opzioni di estrazione', () => {
+    render(<SmartExtractPanel onExtract={mockOnExtract} onClose={mockOnClose} />);
 
-    await waitFor(() => {
-      expect(screen.getByTestId('smart-extract-ready')).toBeInTheDocument();
-    });
+    expect(screen.getByTestId('smart-extract-format')).toBeInTheDocument();
+    expect(screen.getByTestId('smart-extract-paginate')).toBeInTheDocument();
+    expect(screen.getByTestId('smart-extract-hint')).toBeInTheDocument();
+    expect(screen.getByTestId('smart-extract-submit')).toBeInTheDocument();
   });
 
-  it('il dropdown formato ha le opzioni JSON, CSV', async () => {
-    render(
-      <SmartExtractPanel
-        analyzePageForExtraction={mockAnalyzePageForExtraction}
-        onExtract={mockOnExtract}
-        onClose={mockOnClose}
-      />
-    );
-
-    await waitFor(() => screen.getByTestId('smart-extract-format'));
+  it('il dropdown formato ha le opzioni JSON, CSV', () => {
+    render(<SmartExtractPanel onExtract={mockOnExtract} onClose={mockOnClose} />);
 
     const select = screen.getByTestId('smart-extract-format') as HTMLSelectElement;
     const options = Array.from(select.options).map(o => o.value);
@@ -153,24 +132,17 @@ describe('SmartExtractPanel', () => {
     expect(options).toContain('csv');
   });
 
-  it('bottone Estrai chiama startSmartExtract con i parametri selezionati', async () => {
-    render(
-      <SmartExtractPanel
-        analyzePageForExtraction={mockAnalyzePageForExtraction}
-        onExtract={mockOnExtract}
-        onClose={mockOnClose}
-      />
-    );
+  it('bottone Estrai chiama startSmartExtract con hint, formato e paginate', async () => {
+    render(<SmartExtractPanel onExtract={mockOnExtract} onClose={mockOnClose} />);
 
-    await waitFor(() => screen.getByTestId('smart-extract-format'));
-
-    // Change format to csv
     fireEvent.change(screen.getByTestId('smart-extract-format'), { target: { value: 'csv' } });
+    fireEvent.click(screen.getByTestId('smart-extract-paginate'));
+    fireEvent.change(screen.getByTestId('smart-extract-hint'), { target: { value: 'solo titoli' } });
 
     fireEvent.click(screen.getByTestId('smart-extract-submit'));
 
     await waitFor(() => {
-      expect(mockOnExtract).toHaveBeenCalledWith('', 'csv', false);
+      expect(mockOnExtract).toHaveBeenCalledWith('solo titoli', 'csv', true);
     });
   });
 });

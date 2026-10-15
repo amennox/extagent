@@ -43,7 +43,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('https://example.com');
 
-      expect(result).toBe('Successfully navigated to https://example.com');
+      expect(result).toContain('Successfully navigated to https://example.com');
       expect(mockPage.goto).toHaveBeenCalledWith('https://example.com');
     });
 
@@ -103,7 +103,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('https://example.com');
 
-      expect(result).toBe('Successfully navigated to https://example.com');
+      expect(result).toContain('Successfully navigated to https://example.com');
       expect(mockPage.goto).toHaveBeenCalledWith('https://example.com');
     });
 
@@ -115,7 +115,7 @@ describe('Navigation Tools', () => {
 
       const result = await tool.func('https://example.com');
 
-      expect(result).toBe('Successfully navigated to https://example.com');
+      expect(result).toContain('Successfully navigated to https://example.com');
       expect(mockChromeAPIs.runtime.sendMessage).not.toHaveBeenCalled();
     });
 
@@ -342,7 +342,7 @@ describe('Navigation Tools', () => {
 
       // Navigate to a page
       const navigateResult = await navigateTool.func('https://example.com');
-      expect(navigateResult).toBe('Successfully navigated to https://example.com');
+      expect(navigateResult).toContain('Successfully navigated to https://example.com');
 
       // Wait for navigation to complete
       const waitResult = await waitTool.func('load');

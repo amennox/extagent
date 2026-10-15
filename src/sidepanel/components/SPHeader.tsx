@@ -1,6 +1,5 @@
 import React from 'react';
-import { StatusDot } from '../../ui';
-import { LucideIcon } from '../../ui';
+import { StatusDot, IconButton, LucideIcon } from '../../ui';
 
 interface SPHeaderProps {
   tabName: string;
@@ -16,41 +15,55 @@ export function SPHeader({ tabName, tabStatus, onRefresh }: SPHeaderProps) {
 
   return (
     <div style={{
-      height: 48, padding: '0 14px', display: 'flex', alignItems: 'center',
-      justifyContent: 'space-between', borderBottom: '1px solid var(--border)',
-      background: 'var(--surface)', flex: '0 0 auto',
+      height: 52, padding: '0 14px', display: 'flex', alignItems: 'center',
+      justifyContent: 'space-between', flex: '0 0 auto',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Logo />
+        <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: -0.3, color: 'var(--text)' }}>DomMotion</span>
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{
-          width: 22, height: 22, borderRadius: 6,
-          background: 'linear-gradient(135deg, var(--primary), var(--primary-dim))',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          display: 'flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 999, height: 28, maxWidth: 220,
         }}>
-          <span style={{ color: '#fff', fontSize: 13, fontWeight: 800, letterSpacing: -1 }}>∞</span>
+          <StatusDot status={status} size={7} />
+          <span style={{
+            fontSize: 11.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140,
+          }}>{tabName || 'no tab'}</span>
+          <button
+            title="Refresh tab"
+            onClick={onRefresh}
+            style={{
+              background: 'transparent', border: 0, padding: 2, marginLeft: 2, cursor: 'pointer',
+              color: 'var(--text-muted)', display: 'inline-flex', borderRadius: 4,
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--text)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; }}
+          >
+            <LucideIcon name="RefreshCw" size={11.5} />
+          </button>
         </div>
-        <span style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: -0.2 }}>InfinitAgent</span>
+        <IconButton icon="X" size="sm" title="Close" onClick={() => window.close()} />
       </div>
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 6, padding: '4px 8px',
-        background: 'var(--surface-2)', border: '1px solid var(--border)',
-        borderRadius: 999, height: 26, maxWidth: 200,
-      }}>
-        <StatusDot status={status} />
-        <span style={{
-          fontSize: 11.5, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)',
-          overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130,
-        }}>{tabName || 'no tab'}</span>
-        <button
-          title="Refresh tab"
-          onClick={onRefresh}
-          style={{
-            background: 'transparent', border: 0, padding: 2, marginLeft: 2, cursor: 'pointer',
-            color: 'var(--text-muted)', display: 'inline-flex', borderRadius: 4,
-          }}
-        >
-          <LucideIcon name="RefreshCw" size={11.5} />
-        </button>
-      </div>
+    </div>
+  );
+}
+
+function Logo() {
+  return (
+    <div style={{
+      width: 24, height: 24, borderRadius: 7,
+      background: 'linear-gradient(135deg, var(--primary), var(--primary-dim))',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      boxShadow: '0 2px 6px oklch(56% 0.19 296 / 0.25)',
+    }}>
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M10 6L4.5 9.4641V2.5359L10 6Z" fill="white" />
+      </svg>
     </div>
   );
 }

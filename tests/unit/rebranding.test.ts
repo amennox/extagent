@@ -4,16 +4,16 @@ import { sync as globSync } from 'glob';
 
 const ROOT = path.resolve(__dirname, '../../');
 
-describe('Rebranding InfinitAgent', () => {
+describe('Rebranding DomMotion', () => {
   it('manifest.json non contiene "BrowserBee" o "browserbee"', () => {
     const manifest = fs.readFileSync(path.join(ROOT, 'public/manifest.json'), 'utf-8');
     expect(manifest).not.toMatch(/BrowserBee/i);
     expect(manifest).not.toMatch(/browserbee/);
   });
 
-  it('manifest.json ha name="InfinitAgent"', () => {
+  it('manifest.json ha name="DomMotion"', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'public/manifest.json'), 'utf-8'));
-    expect(manifest.name).toBe('InfinitAgent');
+    expect(manifest.name).toBe('DomMotion');
   });
 
   it('manifest.json ha shortcut Alt+Shift+E per _execute_side_panel', () => {
@@ -23,9 +23,9 @@ describe('Rebranding InfinitAgent', () => {
     expect(cmd.suggested_key?.default).toBe('Alt+Shift+E');
   });
 
-  it('package.json ha name="infinit-agent"', () => {
+  it('package.json ha name="dom-motion"', () => {
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-    expect(pkg.name).toBe('infinit-agent');
+    expect(pkg.name).toBe('dom-motion');
   });
 
   it('nessun file src/ contiene la stringa "BrowserBee" (eccetto commenti crediti)', () => {

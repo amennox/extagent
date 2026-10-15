@@ -2,11 +2,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useLang } from '../../../i18n';
 import { SkillDefinition, SkillManager, parseSkill } from '../../../agent/skillManager';
 import { TOOL_DESCRIPTIONS_EN } from '../../../agent/tools/descriptions.en';
-import { Section } from '../Section';
+import { useLang } from '../../../i18n';
 import { Button, IconButton, Chip, FloatingInput, LucideIcon } from '../../../ui';
+import { Section } from '../Section';
 
 // ─── Static tool data ─────────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ function buildImprovementSystemPrompt(): string {
     .map(([name, desc]) => `- \`${name}\`: ${desc}`)
     .join('\n');
 
-  return `You are an expert at writing InfinitAgent browser automation skills.
+  return `You are an expert at writing DomMotion browser automation skills.
 
 A skill is a Markdown document describing a browser automation workflow.
 
@@ -190,22 +190,27 @@ function SkillEditorPanel({
       const modelId = profile?.modelId || config.apiModelId || '';
       const fullMd  = `---\ntitle: ${title}\ndescription: ${description}\n---\n\n${body}`;
 
+      // Standard OpenAI-compatible body (aligned with the provider): reasoning
+      // via reasoning_effort, non-standard params via the profile's extraBody.
+      const requestBody: Record<string, unknown> = {
+        model: modelId,
+        messages: [
+          { role: 'system', content: buildImprovementSystemPrompt() },
+          { role: 'user',   content: fullMd },
+        ],
+        stream: true,
+        max_completion_tokens: profile?.maxTokens ?? 8192,
+        temperature: profile?.temperature ?? 0.3,
+      };
+      if (profile?.reasoningEffort) requestBody.reasoning_effort = profile.reasoningEffort;
+      if (profile?.extraBody) {
+        try { Object.assign(requestBody, JSON.parse(profile.extraBody)); } catch { /* ignore invalid extraBody */ }
+      }
+
       const resp = await fetch(`${config.baseUrl.replace(/\/$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` },
-        body: JSON.stringify({
-          model: modelId,
-          messages: [
-            { role: 'system', content: buildImprovementSystemPrompt() },
-            { role: 'user',   content: fullMd },
-          ],
-          stream: true,
-          max_tokens: profile?.maxTokens ?? 4096,
-          temperature: profile?.enableThinking ? 1 : (profile?.temperature ?? 0.3),
-          enable_thinking: profile?.enableThinking ?? false,
-          ...(profile?.enableThinking && profile.thinkingBudget
-            ? { thinking_budget: profile.thinkingBudget } : {}),
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       if (!resp.ok || !resp.body) {
@@ -219,6 +224,8 @@ function SkillEditorPanel({
 
       const reader  = resp.body.getReader();
       const decoder = new TextDecoder();
+      const { ThinkTagFilter } = await import('../../../models/providers/openai-compatible');
+      const thinkFilter = new ThinkTagFilter();
       let accumulated = '';
 
       while (true) {
@@ -232,11 +239,20 @@ function SkillEditorPanel({
           try {
             const delta = JSON.parse(data).choices?.[0]?.delta;
             if (delta?.content && !delta?.reasoning_content) {
-              accumulated += delta.content;
-              onBodyChange(accumulated);
+              // Silent think-tag filtering (Galene-style inline reasoning)
+              const filtered = thinkFilter.push(delta.content);
+              if (filtered.text) {
+                accumulated += filtered.text;
+                onBodyChange(accumulated);
+              }
             }
           } catch { /* ignore malformed SSE lines */ }
         }
+      }
+      const rest = thinkFilter.flush();
+      if (rest.text) {
+        accumulated += rest.text;
+        onBodyChange(accumulated);
       }
     } catch (err) {
       setAiError(err instanceof Error ? err.message : 'Errore sconosciuto');

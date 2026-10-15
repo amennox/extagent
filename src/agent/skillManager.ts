@@ -1,24 +1,40 @@
 const STORAGE_KEY = 'skills';
 
-export type ParsedStepType = 'navigate' | 'extract' | 'paginate' | 'fill' | 'play' | 'export';
+export type ParsedStepType = 'navigate' | 'extract' | 'paginate' | 'fill' | 'play' | 'export' | 'compute';
 
 export interface ParsedStep {
   type: ParsedStepType;
   payload: string;
   raw: string;
+  /** Variable name to store the step result in (from `→ salva in {{var}}`) */
+  saveAs?: string;
 }
 
 export interface SkillDefinition {
   title: string;
   description: string;
+  /** Declared parameters (frontmatter `params:`), substituted as {{param}} */
+  params?: string[];
   steps: ParsedStep[];
+  /** Free-text instruction lines (Level 3 — used by the LLM on exceptions) */
+  notes?: string[];
   raw: string;
+}
+
+/** Parse the frontmatter `params:` field: `params: [a, b]` or `params: a, b`. */
+function parseParams(frontmatter: string): string[] | undefined {
+  const match = frontmatter.match(/^params:\s*(.+)$/m);
+  if (!match) return undefined;
+  const value = match[1].trim().replace(/^\[/, '').replace(/\]$/, '');
+  const params = value.split(',').map(p => p.trim()).filter(p => p.length > 0);
+  return params.length > 0 ? params : undefined;
 }
 
 /**
  * Parse a skill markdown string into a SkillDefinition.
  * Expects YAML frontmatter delimited by --- lines.
  * Special step commands are backtick-enclosed: `command: payload`
+ * A step may store its result in a variable: `extract: {...}` → salva in {{ordini}}
  */
 export function parseSkill(markdown: string): SkillDefinition {
   const frontmatterMatch = markdown.match(/^---\n([\s\S]*?)\n---/);
@@ -29,22 +45,33 @@ export function parseSkill(markdown: string): SkillDefinition {
   const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
   const title = titleMatch?.[1]?.trim() ?? '';
   const description = descMatch?.[1]?.trim() ?? '';
+  const params = parseParams(frontmatter);
 
   const body = markdown.slice(frontmatterMatch[0].length);
   const steps: ParsedStep[] = [];
+  const notes: string[] = [];
 
   for (const line of body.split('\n')) {
-    const cmdMatch = line.match(/`(navigate|extract|paginate|fill|play|export):\s*([^`]*)`/);
+    const cmdMatch = line.match(/`(navigate|extract|paginate|fill|play|export|compute):\s*([^`]*)`/);
     if (cmdMatch) {
+      // Optional result variable: `…` → salva in {{var}}  (also: → {{var}})
+      const saveMatch = line.match(/(?:→|->)\s*(?:salva\s+in\s+|save\s+(?:in|as)\s+)?\{\{\s*([\w-]+)\s*\}\}/i);
       steps.push({
         type: cmdMatch[1] as ParsedStepType,
         payload: cmdMatch[2].trim(),
         raw: line.trim(),
+        saveAs: saveMatch?.[1],
       });
+    } else {
+      const text = line.trim();
+      // Collect meaningful free-text lines (skip headings, list bullets alone, empty)
+      if (text && !/^#/.test(text) && !/^[-*]\s*$/.test(text) && !/^\d+\.\s*$/.test(text)) {
+        notes.push(text.replace(/^[-*\d.]+\s*/, ''));
+      }
     }
   }
 
-  return { title, description, steps, raw: markdown };
+  return { title, description, params, steps, notes: notes.length ? notes : undefined, raw: markdown };
 }
 
 export class SkillManager {

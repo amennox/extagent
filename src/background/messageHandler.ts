@@ -1,6 +1,6 @@
 import { handleApprovalResponse } from '../agent/approvalManager';
 import { TokenTrackingService } from '../tracking/tokenTrackingService';
-import { executePrompt } from './agentController';
+import { executePrompt, applyTaskFeedback } from './agentController';
 import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
@@ -167,6 +167,23 @@ export function handleMessage(
         sendResponse({ success: true });
         return true;
 
+      case 'taskFeedback':
+        (async () => {
+          try {
+            const windowId = message.windowId
+              ?? (message.tabId ? (await chrome.tabs.get(message.tabId))?.windowId : undefined);
+            if (windowId !== undefined) {
+              const result = await applyTaskFeedback(windowId, message.positive === true);
+              sendResponse({ success: true, ...result });
+            } else {
+              sendResponse({ success: false, error: 'No window for feedback' });
+            }
+          } catch (error) {
+            sendResponse({ success: false, error: handleError(error, 'applying task feedback') });
+          }
+        })();
+        return true;
+
       default:
         // This should never happen due to the type guard, but TypeScript requires it
         logWithTimestamp(`Unhandled message action: ${(message as any).action}`, 'warn');
@@ -221,7 +238,8 @@ function isBackgroundMessage(message: any): message is BackgroundMessage {
       message.action === 'deleteRecording' ||
       message.action === 'recordingStep' ||
       message.action === 'playRecording' ||
-      message.action === 'executeSkillPrompt'
+      message.action === 'executeSkillPrompt' ||
+      message.action === 'taskFeedback'
     )
   );
 }
@@ -412,15 +430,10 @@ function handleReflectAndLearn(
   sendResponse: (response?: any) => void
 ): void {
   try {
-    console.log("MEMORY DEBUG: handleReflectAndLearn called", { tabId: message.tabId });
-    
     // Trigger the reflection process
     triggerReflection(message.tabId);
-    
-    console.log("MEMORY DEBUG: triggerReflection called successfully");
     sendResponse({ success: true });
   } catch (error) {
-    console.error("MEMORY DEBUG: Error in handleReflectAndLearn", error);
     const errorMessage = handleError(error, 'triggering reflection');
     logWithTimestamp(`Error triggering reflection: ${errorMessage}`, 'error');
     sendResponse({ success: false, error: errorMessage });
@@ -507,6 +520,65 @@ async function handleCheckAgentStatus(
   }
 }
 
+// ── Navigation capture during recording ──────────────────────────────────────
+// The content script cannot observe navigations; the background listens to
+// webNavigation events for the recorded tab and adds `navigate` steps.
+
+let recordedTabId: number | null = null;
+let lastRecordedNavUrl: string | null = null;
+
+function onRecordedNavigation(details: { tabId: number; url: string; frameId: number }): void {
+  if (recordedTabId === null || details.tabId !== recordedTabId) return;
+  if (details.frameId !== 0) return; // main frame only
+  if (!/^https?:/.test(details.url)) return;
+  if (details.url === lastRecordedNavUrl) return; // dedupe (SPA + committed both firing)
+  lastRecordedNavUrl = details.url;
+
+  const manager = RecordingManager.getInstance();
+  manager.isRecording().then(active => {
+    if (!active) return;
+    manager.addStep({
+      type: 'navigate',
+      url: details.url,
+      pageUrl: details.url,
+      timestamp: Date.now(),
+      description: `navigazione verso ${details.url}`,
+    }).then(() => {
+      chrome.runtime.sendMessage({ action: 'recordingStepAdded' }).catch?.(() => undefined);
+      // Re-arm capture in the (re)loaded page
+      if (recordedTabId !== null) {
+        setTimeout(() => {
+          if (recordedTabId !== null) {
+            chrome.tabs.sendMessage(recordedTabId, { action: 'startRecordingCapture' }, () => void chrome.runtime.lastError);
+          }
+        }, 400);
+      }
+    }).catch(() => undefined);
+  }).catch(() => undefined);
+}
+
+function attachNavigationCapture(tabId: number): void {
+  recordedTabId = tabId;
+  lastRecordedNavUrl = null;
+  try {
+    chrome.webNavigation.onCommitted.addListener(onRecordedNavigation as any);
+    chrome.webNavigation.onHistoryStateUpdated.addListener(onRecordedNavigation as any);
+  } catch {
+    // webNavigation unavailable — navigations simply won't be recorded
+  }
+}
+
+function detachNavigationCapture(): void {
+  try {
+    chrome.webNavigation.onCommitted.removeListener(onRecordedNavigation as any);
+    chrome.webNavigation.onHistoryStateUpdated.removeListener(onRecordedNavigation as any);
+  } catch {
+    // ignore
+  }
+  recordedTabId = null;
+  lastRecordedNavUrl = null;
+}
+
 async function handleStartRecordingCapture(
   message: Extract<BackgroundMessage, { action: 'startRecordingCapture' }>,
   sendResponse: (response?: any) => void
@@ -518,6 +590,19 @@ async function handleStartRecordingCapture(
     const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
     if (tabs[0]?.id) {
       chrome.tabs.sendMessage(tabs[0].id, { action: 'startRecordingCapture' });
+      attachNavigationCapture(tabs[0].id);
+      // Record the starting URL as the first step
+      if (tabs[0].url && /^https?:/.test(tabs[0].url)) {
+        lastRecordedNavUrl = tabs[0].url;
+        await manager.addStep({
+          type: 'navigate',
+          url: tabs[0].url,
+          pageUrl: tabs[0].url,
+          pageTitle: tabs[0].title,
+          timestamp: Date.now(),
+          description: `pagina iniziale ${tabs[0].url}`,
+        });
+      }
     }
   } catch {
     // content script may not be injected yet — ignore
@@ -529,11 +614,17 @@ function handleStopRecordingCapture(
   _message: Extract<BackgroundMessage, { action: 'stopRecordingCapture' }>,
   sendResponse: (response?: any) => void
 ): void {
-  chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
-    if (tabs[0]?.id) {
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'stopRecordingCapture' });
-    }
-  });
+  const stopTabId = recordedTabId;
+  detachNavigationCapture();
+  if (stopTabId !== null) {
+    chrome.tabs.sendMessage(stopTabId, { action: 'stopRecordingCapture' }, () => void chrome.runtime.lastError);
+  } else {
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, (tabs) => {
+      if (tabs[0]?.id) {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'stopRecordingCapture' });
+      }
+    });
+  }
   sendResponse({ success: true });
 }
 
@@ -541,6 +632,7 @@ async function handleSaveRecording(
   message: Extract<BackgroundMessage, { action: 'saveRecording' }>,
   sendResponse: (response?: any) => void
 ): Promise<void> {
+  detachNavigationCapture();
   const manager = RecordingManager.getInstance();
   const recording = await manager.stopRecording(message.description ?? '');
   sendResponse({ success: true, recording });
@@ -550,6 +642,7 @@ async function handleCancelRecording(
   _message: Extract<BackgroundMessage, { action: 'cancelRecording' }>,
   sendResponse: (response?: any) => void
 ): Promise<void> {
+  detachNavigationCapture();
   const manager = RecordingManager.getInstance();
   await manager.cancelRecording();
   sendResponse({ success: true });

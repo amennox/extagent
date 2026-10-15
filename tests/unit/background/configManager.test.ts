@@ -14,6 +14,10 @@ const mockChromeStorage = {
     get: jest.fn(),
     set: jest.fn(),
   },
+  local: {
+    get: jest.fn(),
+    set: jest.fn(),
+  },
 };
 
 Object.defineProperty(global, 'chrome', {
@@ -50,6 +54,29 @@ describe('ConfigManager', () => {
       const a = ConfigManager.getInstance();
       const b = ConfigManager.getInstance();
       expect(a).toBe(b);
+    });
+  });
+
+  describe('debug mode', () => {
+    it('default false quando non configurato', async () => {
+      mockChromeStorage.local.get.mockResolvedValue({ debugMode: false });
+      expect(await configManager.getDebugMode()).toBe(false);
+    });
+
+    it('restituisce true quando abilitato', async () => {
+      mockChromeStorage.local.get.mockResolvedValue({ debugMode: true });
+      expect(await configManager.getDebugMode()).toBe(true);
+    });
+
+    it('setDebugMode persiste in chrome.storage.local', async () => {
+      mockChromeStorage.local.set.mockResolvedValue(undefined);
+      await configManager.setDebugMode(true);
+      expect(mockChromeStorage.local.set).toHaveBeenCalledWith({ debugMode: true });
+    });
+
+    it('normalizza valori non booleani a false', async () => {
+      mockChromeStorage.local.get.mockResolvedValue({ debugMode: 'yes' });
+      expect(await configManager.getDebugMode()).toBe(false);
     });
   });
 
@@ -241,6 +268,62 @@ describe('ConfigManager', () => {
         'http://localhost:8000/v1/chat/completions',
         expect.any(Object)
       );
+    });
+
+    it('risolve un URL origin-only su /v1 automaticamente', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ status: 200, ok: true });
+      const result = await configManager.testConnection('https://api-gb10.elettra.ai', 'key', 'model');
+      expect(result.ok).toBe(true);
+      expect(result.resolvedBaseUrl).toBe('https://api-gb10.elettra.ai/v1');
+      expect(global.fetch).toHaveBeenCalledWith('https://api-gb10.elettra.ai/v1/chat/completions', expect.any(Object));
+    });
+
+    it('fa fallback su un candidato alternativo se il primo dà 404', async () => {
+      // input con /v1 esplicito: candidati = [.../v1, ... (root)]
+      (global.fetch as jest.Mock)
+        .mockResolvedValueOnce({ status: 404, ok: false }) // .../v1
+        .mockResolvedValueOnce({ status: 200, ok: true });  // root
+      const result = await configManager.testConnection('https://host.tld/v1', 'key', 'model');
+      expect(result.ok).toBe(true);
+      expect(result.resolvedBaseUrl).toBe('https://host.tld');
+    });
+  });
+
+  describe('fetchModels', () => {
+    beforeEach(() => {
+      global.fetch = jest.fn();
+    });
+
+    it('restituisce i modelli con la context window dal formato OpenAI', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true, status: 200,
+        json: jest.fn().mockResolvedValue({
+          data: [{ id: 'qwen3-30b', max_model_len: 262144 }, { id: 'qwen3-7b', context_length: 32768 }],
+        }),
+      });
+      const result = await configManager.fetchModels('https://api-gb10.elettra.ai/v1', 'key');
+      expect(result.ok).toBe(true);
+      expect(result.models).toEqual([
+        { id: 'qwen3-30b', contextWindow: 262144 },
+        { id: 'qwen3-7b', contextWindow: 32768 },
+      ]);
+    });
+
+    it('risolve un URL origin-only su /v1 e chiama /v1/models', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true, status: 200, json: jest.fn().mockResolvedValue({ data: [{ id: 'm', max_model_len: 128000 }] }),
+      });
+      const result = await configManager.fetchModels('https://api-gb10.elettra.ai', 'key');
+      expect(result.ok).toBe(true);
+      expect(result.resolvedBaseUrl).toBe('https://api-gb10.elettra.ai/v1');
+      expect(global.fetch).toHaveBeenCalledWith('https://api-gb10.elettra.ai/v1/models', expect.any(Object));
+    });
+
+    it('restituisce errore se nessun candidato serve /models', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({ status: 404, ok: false });
+      const result = await configManager.fetchModels('https://host.tld', 'key');
+      expect(result.ok).toBe(false);
+      expect(result.error).toBeDefined();
     });
   });
 });

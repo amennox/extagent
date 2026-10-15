@@ -9,3 +9,5 @@ export { SegmentedControl } from './SegmentedControl';
 export { Toggle } from './Toggle';
 export { FloatingInput } from './FloatingInput';
 export { Button } from './Button';
+export { Card } from './Card';
+export { Section } from './Section';

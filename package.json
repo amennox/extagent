@@ -1,7 +1,7 @@
 {
-  "name": "infinit-agent",
+  "name": "dom-motion",
   "description": "Control your browser with natural language",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "keywords": [
     "browser-automation",
@@ -10,7 +10,7 @@
     "llm",
     "playwright"
   ],
-  "author": "InfinitAgent Contributors",
+  "author": "DomMotion Contributors",
   "license": "Apache-2.0",
   "scripts": {
     "build": "tsc && vite build && node scripts/copy-static.js",

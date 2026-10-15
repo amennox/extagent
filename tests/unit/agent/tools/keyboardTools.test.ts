@@ -39,7 +39,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('Enter');
 
-      expect(result).toBe('Pressed key: Enter');
+      expect(result).toContain('Pressed key: Enter');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Enter');
     });
 
@@ -49,7 +49,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('ArrowLeft');
 
-      expect(result).toBe('Pressed key: ArrowLeft');
+      expect(result).toContain('Pressed key: ArrowLeft');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('ArrowLeft');
     });
 
@@ -59,7 +59,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('F1');
 
-      expect(result).toBe('Pressed key: F1');
+      expect(result).toContain('Pressed key: F1');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('F1');
     });
 
@@ -69,7 +69,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('Control');
 
-      expect(result).toBe('Pressed key: Control');
+      expect(result).toContain('Pressed key: Control');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Control');
     });
 
@@ -79,7 +79,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('Control+A');
 
-      expect(result).toBe('Pressed key: Control+A');
+      expect(result).toContain('Pressed key: Control+A');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Control+A');
     });
 
@@ -89,7 +89,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('Control+Shift+Z');
 
-      expect(result).toBe('Pressed key: Control+Shift+Z');
+      expect(result).toContain('Pressed key: Control+Shift+Z');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Control+Shift+Z');
     });
 
@@ -99,7 +99,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('a');
 
-      expect(result).toBe('Pressed key: a');
+      expect(result).toContain('Pressed key: a');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('a');
     });
 
@@ -122,7 +122,7 @@ describe('Keyboard Tools', () => {
 
       const result = await tool.func('  Enter  ');
 
-      expect(result).toBe('Pressed key: Enter');
+      expect(result).toContain('Pressed key: Enter');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Enter');
     });
 
@@ -321,7 +321,7 @@ describe('Keyboard Tools', () => {
       const pressResult = await pressTool.func('Control+A');
       const typeResult = await typeTool.func('New text content');
 
-      expect(pressResult).toBe('Pressed key: Control+A');
+      expect(pressResult).toContain('Pressed key: Control+A');
       expect(typeResult).toBe('Typed 16 characters');
     });
 

@@ -1,12 +1,12 @@
 export const it: Record<string, string> = {
-  'app.title': 'InfinitAgent',
+  'app.title': 'DomMotion',
 
   // Side panel
   'sidepanel.tagline': 'Cosa posso fare per te oggi?',
   'sidepanel.placeholder': 'Scrivi un messaggio...',
   'sidepanel.placeholderDisconnected': 'Connessione al tab persa. Aggiorna il tab per continuare.',
   'sidepanel.noProvider': 'Nessun provider LLM configurato',
-  'sidepanel.noProviderDesc': 'Devi configurare un provider LLM prima di usare InfinitAgent.',
+  'sidepanel.noProviderDesc': 'Devi configurare un provider LLM prima di usare DomMotion.',
   'sidepanel.configureProvider': 'Configura Provider',
   'sidepanel.noOutput': 'Nessun output',
 
@@ -23,6 +23,9 @@ export const it: Record<string, string> = {
   'tab.connected': 'Connesso',
   'tab.disconnected': 'Disconnesso',
   'tab.attach': 'Aggancia al tab corrente',
+  'tab.switched': 'Passato al tab',
+  'tab.dialog': 'Dialogo',
+  'tab.pageError': 'Errore pagina',
 
   // Actions
   'action.stop': 'Annulla',
@@ -41,6 +44,9 @@ export const it: Record<string, string> = {
   'approval.reason': 'Motivo:',
   'approval.approve': 'Approva',
   'approval.deny': 'Rifiuta',
+  'approval.approved': 'Approvato',
+  'approval.rejected': 'Rifiutato',
+  'approval.cancelled': 'Esecuzione annullata — tutte le approvazioni in sospeso sono state rifiutate automaticamente',
 
   // Token usage
   'token.usage': 'Token usati:',
@@ -52,6 +58,24 @@ export const it: Record<string, string> = {
 
   // Output
   'output.title': 'Output',
+  'sidepanel.output': 'Output',
+  'sidepanel.history': 'Cronologia',
+  'sidepanel.you': 'Tu',
+  'sidepanel.assistant': 'Assistente',
+  'sidepanel.disclaimer': 'DomMotion può commettere errori. Verifica le azioni critiche.',
+  'sidepanel.localModel': 'locale',
+  'sidepanel.newPrompt': 'Nuovo prompt',
+  'sidepanel.queued': 'Prompt aggiunto in coda e verrà eseguito al termine del task corrente',
+  'sidepanel.thinking': 'Sto ragionando...',
+  'sidepanel.running': 'Esecuzione in corso',
+
+  // Composer
+  'composer.send': 'invia',
+  'composer.newline': 'nuova riga',
+
+  // Tool
+  'tool.call': 'esegue',
+  'tool.input': 'Input',
 
   // Options tabs
   'options.tabs.general': 'Generale',
@@ -61,10 +85,10 @@ export const it: Record<string, string> = {
 
   // General tab
   'general.gettingStarted': '🚀 Inizia',
-  'general.steps.intro': 'Segui questi semplici passi per iniziare a usare InfinitAgent:',
+  'general.steps.intro': 'Segui questi semplici passi per iniziare a usare DomMotion:',
   'general.steps.1.title': '1. Ottieni una API Key',
   'general.steps.1.desc': 'Ottieni una API key dal tuo provider LLM OpenAI-compatibile:',
-  'general.steps.2.title': '2. Configura InfinitAgent',
+  'general.steps.2.title': '2. Configura DomMotion',
   'general.steps.2.desc': 'Vai alla tab Configurazione LLM e:',
   'general.steps.2.a': 'Seleziona il provider preferito',
   'general.steps.2.b': 'Inserisci la tua API key',
@@ -72,17 +96,17 @@ export const it: Record<string, string> = {
   'general.steps.3.title': '3. Esegui il tuo primo task',
   'general.steps.3.desc': 'Prova questo esempio per iniziare:',
   'general.steps.3.a': 'Apri una nuova tab e vai su google.com',
-  'general.steps.3.b': "Clicca l'icona InfinitAgent o premi Alt+Shift+E",
+  'general.steps.3.b': "Clicca l'icona DomMotion o premi Alt+Shift+E",
   'general.steps.3.c': '"Cerca il meteo a Parigi"',
-  'general.steps.3.d': 'Premi Invio e guarda InfinitAgent lavorare!',
+  'general.steps.3.d': 'Premi Invio e guarda DomMotion lavorare!',
   'general.tips.title': '💡 Consigli Pro',
-  'general.tips.1': 'Tieni InfinitAgent collegato: Lascialo connesso a un tab per tutta la sessione per le migliori prestazioni',
+  'general.tips.1': 'Tieni DomMotion collegato: Lascialo connesso a un tab per tutta la sessione per le migliori prestazioni',
   'general.tips.2': 'Riaggancia se necessario: Se chiudi il tab collegato, usa il pulsante reattach per riconnetterti',
-  'general.tips.3': "Uno per finestra: Puoi avviare un'istanza InfinitAgent per finestra Chrome",
-  'general.tips.4': "Limitazioni tab: InfinitAgent non può collegarsi a nuovi tab o pagine chrome://",
+  'general.tips.3': "Uno per finestra: Puoi avviare un'istanza DomMotion per finestra Chrome",
+  'general.tips.4': "Limitazioni tab: DomMotion non può collegarsi a nuovi tab o pagine chrome://",
   'general.needHelp': 'Hai bisogno di aiuto?',
   'general.joinDiscord': 'Unisciti alla Community Discord',
-  'general.discordDesc': 'Chiedi aiuto, condividi consigli e connettiti con altri utenti InfinitAgent',
+  'general.discordDesc': 'Chiedi aiuto, condividi consigli e connettiti con altri utenti DomMotion',
   'general.language': 'Lingua',
   'general.language.it': 'Italiano',
   'general.language.en': 'English',
@@ -92,6 +116,42 @@ export const it: Record<string, string> = {
   'general.customPrompt.placeholder': 'Incolla qui il tuo system prompt personalizzato...',
   'general.customPrompt.save': 'Salva prompt',
   'general.customPrompt.reset': 'Ripristina default',
+  'general.tipsDesc': 'Trucchi per usare l\'agente più efficacemente.',
+  'general.tips.count': 'consigli per chi inizia',
+  'general.lines': 'righe',
+  'general.chars': 'char',
+  'general.saved': 'salvato',
+  'general.maxSteps.title': 'Massimo numero di passi',
+  'general.maxSteps.desc': 'Numero massimo di azioni che l\'agente può eseguire prima di fermarsi.',
+  'general.maxSteps.label': 'Passi massimi',
+  'general.maxSteps.reset': 'Reimposta default',
+
+  // Feedback
+  'feedback.question': 'Il task è andato a buon fine?',
+  'feedback.good': 'Sì, memorizza questo approccio',
+  'feedback.bad': 'No, dimentica questo approccio',
+  'feedback.thanks': 'Grazie, memoria aggiornata.',
+
+  // Planning
+  'general.planning.title': 'Pianificazione iniziale',
+  'general.planning.desc': 'Per i task lunghi genera prima un piano di 3-6 passi e lo tiene come riferimento durante l\'esecuzione.',
+  'general.planning.label': 'Abilita pianificazione',
+
+  'action.exportLog': "Esporta log sessione",
+
+  // Debug mode
+  'general.debug.title': 'Modalità debug',
+  'general.debug.desc': 'Visibilità totale sul comportamento dell\'agente per diagnosticare e correggere: risposte grezze del LLM, ragionamento, richieste inviate e risultati completi dei tool.',
+  'general.debug.label': 'Abilita modalità debug',
+  'general.debug.hint': 'I dettagli di debug compaiono nel pannello laterale durante l\'esecuzione. Disattiva per un\'interfaccia pulita.',
+  'general.debug.on': 'Debug attivo',
+
+  // Smart panels
+  'smartpaste.title': 'Smart Paste',
+  'smartpaste.hint': '↵ per compilare',
+  'smartpaste.fieldsDetected': '{count} campi rilevati',
+  'smartpaste.pasteData': 'Incolla i tuoi dati qui',
+  'smartextract.title': 'Smart Extract',
 
   // Quick actions
   'quickactions.smartPaste': 'Smart Paste',
@@ -105,10 +165,12 @@ export const it: Record<string, string> = {
   'quickactions.format.csv': 'CSV',
   'quickactions.multipage': 'Multi-pagina',
   'quickactions.proposedFields': 'Campi rilevati',
+  'quickactions.hintLabel': 'Hint (opzionale)',
+  'quickactions.hintPlaceholder': 'Descrivi i dati da estrarre, es. solo titoli e prezzi',
 
   // About
   'about.title': 'Informazioni',
-  'about.desc1': "InfinitAgent è un'estensione Chrome che ti permette di controllare il browser con il linguaggio naturale. Usa un backend LLM OpenAI-compatibile per interpretare le istruzioni e Playwright per eseguirle.",
+  'about.desc1': "DomMotion è un'estensione Chrome che ti permette di controllare il browser con il linguaggio naturale. Usa un backend LLM OpenAI-compatibile per interpretare le istruzioni e Playwright per eseguirle.",
   'about.desc2': "Per usare l'estensione, clicca sull'icona per aprire il pannello laterale, poi inserisci le tue istruzioni nel campo e premi Invio.",
 
   // LLM Config
@@ -127,9 +189,13 @@ export const it: Record<string, string> = {
   'openai.apiKeyPlaceholder': 'API key (opzionale se endpoint locale)',
   'openai.baseUrl': 'Base URL:',
   'openai.baseUrlPlaceholder': 'es. http://localhost:8000/v1',
+  'openai.baseUrl.hint': 'Puoi incollare l\'URL con o senza /v1: viene sistemato in automatico (il test lo verifica e corregge).',
   'openai.testConnection': 'Testa connessione',
   'openai.connectionOk': 'Connessione riuscita',
   'openai.missingConfig': 'Inserisci API Key e Base URL',
+  'openai.models.load': 'Carica',
+  'openai.models.loading': 'Carico…',
+  'openai.models.choose': '— scegli un modello —',
 
   // Profiles
   'openai.profiles.title': 'Profili Modello',
@@ -153,7 +219,19 @@ export const it: Record<string, string> = {
   'openai.profiles.modelId': 'Model ID',
   'openai.profiles.modelIdPlaceholder': 'es. qwen3-35b',
   'openai.profiles.enableThinkingShort': 'Abilita thinking',
+  'openai.profiles.reasoning': 'Reasoning',
+  'openai.profiles.reasoningOff': 'Off',
+  'openai.profiles.extraBody': 'Extra body (JSON)',
+  'openai.profiles.extraBodyPlaceholder': 'es. {"chat_template_kwargs": {"enable_thinking": false}}',
+  'openai.profiles.extraBodyHint': 'Parametri aggiuntivi uniti al request body, per endpoint non standard. Lascia vuoto se non serve.',
+  'openai.profiles.extraBodyInvalid': 'JSON non valido: deve essere un oggetto, es. {"chiave": "valore"}',
+  "openai.profiles.nativeTools": "Function calling nativo",
+  "openai.profiles.nativeToolsHint": "Invia anche gli schemi tool nativi (di norma OFF: il protocollo è quello nel prompt).",
   'openai.profiles.add': 'Aggiungi profilo',
+  'openai.profiles.desc': 'Configura più profili modello e assegnali a funzioni specifiche.',
+  'openai.profiles.local': 'locale',
+  'openai.apiKeyEdit': 'Modifica API Key',
+  'openai.testing': 'Verifica…',
 
   // Routing
   'openai.routing.title': 'Routing funzioni',
@@ -174,7 +252,7 @@ export const it: Record<string, string> = {
 
   // Memory
   'memory.title': 'Gestione Memorie',
-  'memory.desc': 'InfinitAgent memorizza le interazioni riuscite con i siti web per migliorare le interazioni future. Puoi esportare queste memorie per backup o trasferirle su un altro dispositivo, e importarle in seguito.',
+  'memory.desc': 'DomMotion memorizza le interazioni riuscite con i siti web per migliorare le interazioni future. Puoi esportare queste memorie per backup o trasferirle su un altro dispositivo, e importarle in seguito.',
   'memory.current': 'Memorie attuali:',
   'memory.export': 'Esporta Memorie',
   'memory.import': 'Importa Memorie',
@@ -225,6 +303,36 @@ export const it: Record<string, string> = {
   'recording.export': 'Esporta JSON',
   'recording.delete': 'Elimina',
   'recording.import': 'Importa JSON',
+  'recording.title': 'Automate',
+  'recording.startRec': 'Avvia REC',
+  'recording.stopRec': 'Stop',
+  'recording.saved': 'Registrazioni salvate',
+  'recording.createSkill': 'Crea skill',
+
+  // Skill wizard (recorder → skill.md)
+  'wizard.title': 'Crea skill dalla registrazione',
+  'wizard.analyzing': 'analisi AI in corso…',
+  'wizard.skillName': 'Nome skill',
+  'wizard.skillDescription': 'Descrizione',
+  'wizard.variables': 'Valori registrati — cosa deve cambiare a ogni esecuzione?',
+  'wizard.recordedValue': 'valore registrato',
+  'wizard.choice.fixed': 'Fisso (sempre questo valore)',
+  'wizard.choice.param': 'Variabile — chiesto all\'avvio',
+  'wizard.choice.expression': 'Espressione (es. data odierna)',
+  'wizard.choice.ai': 'Calcolato dall\'AI',
+  'wizard.paramName': 'nome_parametro',
+  'wizard.aiInstructionPlaceholder': 'Istruzione per l\'AI, es. "prendi il numero ordine estratto al passo precedente"',
+  'wizard.notes': 'Note operative (opzionale)',
+  'wizard.notesPlaceholder': 'es. "Se compare il popup cookie, chiudilo e prosegui"',
+  'wizard.create': 'Crea skill',
+  'wizard.creating': 'Creazione…',
+  'wizard.cancel': 'Annulla',
+  'wizard.created': 'Skill creata',
+  'wizard.expr.today': 'Data odierna (GG/MM/AAAA)',
+  'wizard.expr.todayIso': 'Data odierna (AAAA-MM-GG)',
+  'wizard.expr.todayPlus7': 'Oggi + 7 giorni',
+  'wizard.expr.todayMinus1': 'Ieri',
+  'wizard.expr.now': 'Ora corrente (HH:MM)',
 
   // Output & export
   'output.copyJson': 'Copia JSON',
@@ -235,10 +343,17 @@ export const it: Record<string, string> = {
   // Task history
   'history.title': 'Cronologia',
   'history.rerun': 'Riesegui',
+  'history.empty': 'Nessuna cronologia.',
 
   // Domain profiles
   'options.tabs.profiles': 'Profili Dominio',
   'options.tabs.help': 'Help & Docs',
+  'options.subtitles.general': 'Comportamento di base, lingua e prompt di sistema.',
+  'options.subtitles.providers': 'API key, profili modello e routing per funzione.',
+  'options.subtitles.memory': 'Cosa ricorda l\'agente tra le sessioni.',
+  'options.subtitles.skills': 'Workflow riutilizzabili in Markdown.',
+  'options.subtitles.profiles': 'Comportamento e selettori specifici per sito.',
+  'options.subtitles.help': 'Guide, esempi e riferimento ai tool.',
   'profile.title': 'Profili Dominio',
   'profile.desc': 'I profili dominio arricchiscono il sistema prompt e forniscono hint per i portali specifici.',
   'profile.new': 'Nuovo profilo',
@@ -266,6 +381,11 @@ export const it: Record<string, string> = {
   'error.tabReloaded': 'Il tab collegato è stato ricaricato.',
   'error.cdpDisconnected': 'Connessione al browser persa. Riaggancia il tab.',
   'error.restrictedPage': 'Questa pagina non è accessibile dall\'estensione.',
+  'error.rateLimit': '⚠️ Rate limit raggiunto. Riprovo automaticamente…',
+  'error.apiKeyMissing': 'Errore: configurazione LLM mancante. Apri le impostazioni e configura endpoint e API key.',
+  'agent.cancelledByUser': 'Esecuzione annullata dall\'utente.',
+  'agent.stepRetry': '⚠️ Errore LLM al passo {step}, nuovo tentativo ({attempt}/{max})…',
+  'memory.noHtml': 'La memoria non può contenere HTML di pagina',
 
   // Save
   'save.saving': 'Salvataggio...',

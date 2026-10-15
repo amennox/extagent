@@ -1,10 +1,12 @@
 import { ConfigManager } from "../background/configManager";
+import { getLang, t } from "../i18n";
 import { LLMProvider, ModelProfile, StreamChunk } from "../models/providers/types";
 import { TokenTrackingService } from "../tracking/tokenTrackingService";
 import { ErrorHandler } from "./ErrorHandler";
 import { MemoryManager } from "./MemoryManager";
 import { PromptManager } from "./PromptManager";
-import { trimHistory } from "./TokenManager";
+import { TokenManager, DEFAULT_CONTEXT_WINDOW, observationCharBudget } from "./TokenManager";
+import { setMaxReturnChars } from "./tools/utils";
 import { ToolManager } from "./ToolManager";
 import { requestApproval } from "./approvalManager";
 
@@ -16,8 +18,16 @@ const NAVIGATION_TOOLS = new Set([
 ]);
 
 // Constants
-const DEFAULT_MAX_STEPS = 100;   // prevent infinite loops
-const MAX_OUTPUT_TOKENS = 4000;  // max tokens for LLM response
+export const DEFAULT_MAX_STEPS = 200;   // prevent infinite loops (configurable via setMaxSteps)
+
+export type TaskOutcome = 'success' | 'failure' | 'cancelled' | 'maxSteps';
+
+export interface RunStats {
+  outcome: TaskOutcome;
+  toolCalls: number;
+  toolErrors: number;
+  steps: number;
+}
 
 /**
  * Callback interface for execution
@@ -32,6 +42,8 @@ export interface ExecutionCallbacks {
   onToolEnd?: (result: string) => void;
   onSegmentComplete?: (segment: string) => void;
   onFallbackStarted?: () => void;
+  /** Debug-mode only: total-visibility trace (raw LLM response, request, tool result). */
+  onDebug?: (label: string, detail: string) => void;
 }
 
 /**
@@ -57,7 +69,8 @@ class CallbackAdapter {
       onToolStart: this.originalCallbacks.onToolStart,
       onToolEnd: this.originalCallbacks.onToolEnd,
       onSegmentComplete: this.originalCallbacks.onSegmentComplete,
-      onFallbackStarted: this.originalCallbacks.onFallbackStarted
+      onFallbackStarted: this.originalCallbacks.onFallbackStarted,
+      onDebug: this.originalCallbacks.onDebug
     };
   }
 
@@ -94,9 +107,14 @@ export class ExecutionEngine {
   private errorHandler: ErrorHandler;
   private configManager: ConfigManager | null;
   private activeProfile: ModelProfile | null = null;
+  private tokenManager: TokenManager = new TokenManager();
+  private cachedSystemPrompt: string | null = null;
   private maxSteps = DEFAULT_MAX_STEPS;
   private minMsBetweenCalls = 500;
+  private stepRetryDelayMs = 3000;
   private lastLlmCallTime = 0;
+  private debugMode = false;
+  private lastRunStats: RunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0 };
 
   constructor(
     llmProvider: LLMProvider,
@@ -134,11 +152,61 @@ export class ExecutionEngine {
 
   setActiveProfile(profile: ModelProfile | null): void {
     this.activeProfile = profile;
+    // Propagate the profile's context window to history trimming and to the
+    // observation char limit, so both scale with the configured window
+    // (default 256k) instead of hardcoded values.
+    const contextWindow = profile?.contextWindowSize
+      ?? this.llmProvider.getModel?.()?.info?.contextWindow
+      ?? DEFAULT_CONTEXT_WINDOW;
+    this.tokenManager = new TokenManager(contextWindow);
+    setMaxReturnChars(observationCharBudget(contextWindow));
+    // Profile change may alter language/config-sensitive prompt parts
+    this.cachedSystemPrompt = null;
   }
 
   setMaxSteps(n: number): void { this.maxSteps = n; }
   getMaxSteps(): number { return this.maxSteps; }
   setMinMsBetweenCalls(ms: number): void { this.minMsBetweenCalls = ms; }
+  setStepRetryDelayMs(ms: number): void { this.stepRetryDelayMs = ms; }
+  setDebugMode(enabled: boolean): void { this.debugMode = enabled; }
+  getLastRunStats(): RunStats { return { ...this.lastRunStats }; }
+
+  /** Invalidate the per-task cached system prompt (e.g. page context changed). */
+  invalidateSystemPromptCache(): void {
+    this.cachedSystemPrompt = null;
+  }
+
+  private async getCachedSystemPrompt(): Promise<string> {
+    if (this.cachedSystemPrompt === null) {
+      this.cachedSystemPrompt = await this.promptManager.getSystemPrompt();
+    }
+    return this.cachedSystemPrompt;
+  }
+
+  /**
+   * Safety-net summarizer: when trimHistory drops middle turns, condense them
+   * with one non-streaming LLM call and keep the summary in history instead of
+   * losing the information silently. Failures degrade gracefully (no summary).
+   */
+  private async summarizeRemovedHistory(summaryPrompt: string): Promise<string | null> {
+    try {
+      const stream = this.llmProvider.createMessage(
+        "You are a summarizer. Condense the following conversation turns into a factual summary (max 500 tokens). Keep tool names, selectors, extracted values and page URLs. No preamble.",
+        [{ role: "user", content: summaryPrompt }],
+        undefined,
+        this.activeProfile ?? undefined
+      );
+      let summary = "";
+      for await (const chunk of stream) {
+        if (chunk.type === "text" && chunk.text) summary += chunk.text;
+      }
+      summary = summary.trim();
+      return summary.length > 0 ? summary : null;
+    } catch (err) {
+      console.warn("History summarizer failed, continuing without summary:", err);
+      return null;
+    }
+  }
 
   /**
    * Main execution method with fallback support
@@ -150,6 +218,10 @@ export class ExecutionEngine {
   ): Promise<void> {
     const streamingSupported = await this.errorHandler.isStreamingSupported();
     const isStreaming = streamingSupported && callbacks.onLlmChunk !== undefined;
+
+    // Rebuild the system prompt at task start (page context / profile may have
+    // changed since the previous task); it is then cached for the whole task.
+    this.invalidateSystemPromptCache();
 
     try {
       // Use the execution method with appropriate streaming mode
@@ -188,6 +260,13 @@ export class ExecutionEngine {
       .replace(/\\u003e/g, '>')
       .replace(/\u003c/g, '<')
       .replace(/\u003e/g, '>');
+  }
+
+  private normalizeToolCallTags(text: string): string {
+    // Defensive fix for models that close <tool> with the wrong tag
+    return text
+      .replace(/<tool>([^<]+)<\/input>/gi, '<tool>$1</tool>')
+      .replace(/<tool>([^<]+)<\/requires_approval>/gi, '<tool>$1</tool>');
   }
 
   /**
@@ -258,7 +337,8 @@ export class ExecutionEngine {
    */
   private async processLlmStream(
     messages: any[],
-    adaptedCallbacks: ExecutionCallbacks
+    adaptedCallbacks: ExecutionCallbacks,
+    systemPrompt?: string
   ): Promise<{ accumulatedText: string, toolCallDetected: boolean }> {
     let accumulatedText = "";
     let streamBuffer = "";
@@ -272,13 +352,34 @@ export class ExecutionEngine {
     }
     this.lastLlmCallTime = Date.now();
 
-    // Get tools from the ToolManager
-    const tools = this.toolManager.getTools();
+    // Tool schemas: the canonical protocol is the XML format in the system
+    // prompt. Native function calling is sent ONLY when the profile opts in —
+    // sending both makes models mix the formats (malformed tool calls) and
+    // duplicates all schemas in the server-side prompt.
+    const tools = this.activeProfile?.nativeToolCalling
+      ? this.toolManager.getTools()
+      : [];
 
-    // Use provider interface instead of direct Anthropic API
-    const systemPrompt = await this.promptManager.getSystemPrompt();
+    // Build the system prompt once per task and reuse it on every step: a
+    // byte-identical prefix lets OpenAI-compatible servers (e.g. vLLM with
+    // prefix caching) reuse the prefill across steps.
+    const effectiveSystemPrompt = systemPrompt ?? await this.getCachedSystemPrompt();
+
+    // Debug: outgoing request summary
+    if (this.debugMode && adaptedCallbacks.onDebug) {
+      const approxInput = Math.ceil(
+        (effectiveSystemPrompt.length + messages.reduce((s, m) => s + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length), 0)) / 4
+      );
+      adaptedCallbacks.onDebug('→ LLM request', [
+        `model: ${this.activeProfile?.modelId ?? '(default)'}`,
+        `reasoning_effort: ${this.activeProfile?.reasoningEffort ?? 'off'}`,
+        `messages: ${messages.length} · system prompt: ${effectiveSystemPrompt.length} chars`,
+        `approx input: ~${approxInput} tokens · tools: ${tools.length}`,
+      ].join('\n'));
+    }
+
     const stream = this.llmProvider.createMessage(
-      systemPrompt,
+      effectiveSystemPrompt,
       messages,
       tools,
       this.activeProfile ?? undefined
@@ -287,6 +388,7 @@ export class ExecutionEngine {
     // Track token usage
     let inputTokens = 0;
     let outputTokens = 0;
+    let accumulatedReasoning = "";
     const tokenTracker = TokenTrackingService.getInstance();
 
     for await (const chunk of stream) {
@@ -297,6 +399,11 @@ export class ExecutionEngine {
         const result = this.trackTokenUsage(chunk, inputTokens, outputTokens, tokenTracker);
         inputTokens = result.updatedInputTokens;
         outputTokens = result.updatedOutputTokens;
+      }
+
+      // Capture reasoning (thinking) for debug visibility
+      if (chunk.type === 'reasoning' && chunk.reasoning) {
+        accumulatedReasoning += chunk.reasoning;
       }
 
       // Handle text chunks
@@ -358,7 +465,19 @@ export class ExecutionEngine {
 
     // Decode any escaped HTML entities in the accumulated text
     accumulatedText = this.decodeHtmlEntities(accumulatedText);
+    accumulatedText = this.normalizeToolCallTags(accumulatedText);
     console.log("Decoded HTML entities in accumulated text");
+
+    // Debug: raw LLM response (reasoning + visible answer), untouched
+    if (this.debugMode && adaptedCallbacks.onDebug) {
+      const parts: string[] = [];
+      if (accumulatedReasoning.trim()) {
+        parts.push(`[reasoning / <think>]\n${accumulatedReasoning.trim()}`);
+      }
+      parts.push(`[response]\n${accumulatedText || '(empty)'}`);
+      parts.push(`[tokens] in=${inputTokens} out=${outputTokens}`);
+      adaptedCallbacks.onDebug('← LLM raw response', parts.join('\n\n'));
+    }
 
     adaptedCallbacks.onLlmOutput(accumulatedText);
 
@@ -380,12 +499,18 @@ export class ExecutionEngine {
 
     // Reset cancel flag at the start of execution
     this.errorHandler.resetCancel();
+    this.lastRunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0 };
     try {
       // Initialize messages with the prompt
       let messages = this.initializeMessages(prompt, initialMessages);
 
+      // One system prompt per task: stable prefix across steps (prefix caching)
+      const taskSystemPrompt = await this.getCachedSystemPrompt();
+
       let done = false;
       let step = 0;
+      let consecutiveEmptyResponses = 0;
+      const MAX_EMPTY_RESPONSES = 2;
 
       while (!done && step++ < this.maxSteps && !this.errorHandler.isExecutionCancelled()) {
         try {
@@ -398,13 +523,14 @@ export class ExecutionEngine {
           let llmResult: Awaited<ReturnType<typeof this.processLlmStream>> | null = null;
           for (let attempt = 0; attempt <= MAX_STEP_RETRIES; attempt++) {
             try {
-              llmResult = await this.processLlmStream(messages, adaptedCallbacks);
+              llmResult = await this.processLlmStream(messages, adaptedCallbacks, taskSystemPrompt);
               break;
             } catch (stepErr: any) {
               if (attempt < MAX_STEP_RETRIES && !this.errorHandler.isExecutionCancelled()) {
-                const wait = 3000 * (attempt + 1);
+                const wait = this.stepRetryDelayMs * (attempt + 1);
+                const lang = await getLang().catch(() => 'it' as const);
                 adaptedCallbacks.onToolOutput(
-                  `⚠️ LLM error at step ${step}, retrying (${attempt + 1}/${MAX_STEP_RETRIES})…`
+                  t('agent.stepRetry', lang, { step: String(step), attempt: String(attempt + 1), max: String(MAX_STEP_RETRIES) })
                 );
                 await new Promise(r => setTimeout(r, wait));
               } else {
@@ -416,6 +542,35 @@ export class ExecutionEngine {
 
           // Check for cancellation after LLM response
           if (this.errorHandler.isExecutionCancelled()) break;
+
+          // ── Empty response is NOT task completion ────────────────────────────
+          // Reasoning models sometimes burn the whole output in the thinking
+          // channel (or a channel we don't map) and return no visible text.
+          // Treating that as "done" silently aborts the task mid-flight.
+          if (!accumulatedText.trim()) {
+            consecutiveEmptyResponses++;
+            if (consecutiveEmptyResponses <= MAX_EMPTY_RESPONSES) {
+              messages.push({
+                role: "user",
+                content: `Your previous response was empty (no visible text reached the client — likely everything went into the reasoning channel). The task is NOT finished. Continue from where you left off and reply ONLY with the required format:
+
+<tool>tool_name</tool>
+<input>arguments</input>
+<requires_approval>true or false</requires_approval>
+
+If the task is truly complete, reply with a short final summary in plain text instead.`,
+              });
+              continue;
+            }
+            // Persistent empty responses → fail explicitly, never fake success
+            this.lastRunStats.outcome = 'failure';
+            adaptedCallbacks.onLlmOutput(
+              `Errore: il modello ha restituito ${MAX_EMPTY_RESPONSES + 1} risposte vuote consecutive (output finito nel canale di reasoning?). Task interrotto.`
+            );
+            done = true;
+            break;
+          }
+          consecutiveEmptyResponses = 0;
 
           // Check for incomplete or malformed tool calls
           // This regex looks for tool calls that have <tool> and <input> but are missing <requires_approval>
@@ -617,9 +772,20 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             result = await this.runWithTimeout(toolName, () => tool.func(toolInput));
           }
 
+          // Outcome stats
+          this.lastRunStats.toolCalls++;
+          if (typeof result === 'string' && /^Error\b|^❌/.test(result.trim())) {
+            this.lastRunStats.toolErrors++;
+          }
+
           // Signal that tool execution is complete
           if (adaptedCallbacks.onToolEnd) {
             adaptedCallbacks.onToolEnd(result);
+          }
+
+          // Debug: full (untruncated) tool result
+          if (this.debugMode && adaptedCallbacks.onDebug) {
+            adaptedCallbacks.onDebug(`⚙ tool result · ${toolName}`, result);
           }
 
           // Check for cancellation after tool execution
@@ -655,7 +821,19 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
             messages.push({ role: "user", content: `Tool result: ${result}` });
           }
 
-          const { trimmed } = trimHistory(messages);
+          // Trim against the active profile's context window; if turns were
+          // dropped, condense them into a summary instead of losing them.
+          const { trimmed, removedSummaryPrompt } = this.tokenManager.trim(messages);
+          if (removedSummaryPrompt && trimmed.length < messages.length) {
+            const summary = await this.summarizeRemovedHistory(removedSummaryPrompt);
+            if (summary) {
+              // Insert right after the first (original task) message
+              trimmed.splice(1, 0, {
+                role: "user",
+                content: `[Summary of earlier turns removed from history]\n${summary}`,
+              });
+            }
+          }
           messages = trimmed;
         } catch (error) {
           // If an error occurs during execution, check if it was due to cancellation
@@ -664,14 +842,21 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
         }
       }
 
+      this.lastRunStats.steps = step;
       if (this.errorHandler.isExecutionCancelled()) {
-        adaptedCallbacks.onLlmOutput(
-          `\n\nExecution cancelled by user.`
-        );
+        this.lastRunStats.outcome = 'cancelled';
+        const lang = await getLang().catch(() => 'it' as const);
+        adaptedCallbacks.onLlmOutput(`\n\n${t('agent.cancelledByUser', lang)}`);
       } else if (step >= this.maxSteps) {
-        adaptedCallbacks.onLlmOutput(
-          `Stopped: exceeded maximum of ${this.maxSteps} steps.`
-        );
+        this.lastRunStats.outcome = 'maxSteps';
+        const lang = await getLang().catch(() => 'it' as const);
+        adaptedCallbacks.onLlmOutput(t('error.maxStepsReached', lang));
+      } else if (this.lastRunStats.outcome !== 'failure') {
+        // Completed normally; a high tool-error rate still marks it a failure.
+        // (An explicit failure set inside the loop — e.g. persistent empty
+        // responses — is preserved.)
+        const { toolCalls, toolErrors } = this.lastRunStats;
+        this.lastRunStats.outcome = toolCalls > 0 && toolErrors / toolCalls > 0.5 ? 'failure' : 'success';
       }
       adaptedCallbacks.onComplete();
     } catch (err: any) {
@@ -726,6 +911,7 @@ The <requires_approval> tag is mandatory. Set it to "true" for purchases, data d
         }
       } else {
         // For other errors, show error message
+        this.lastRunStats.outcome = 'failure';
         adaptedCallbacks.onLlmOutput(
           `Fatal error: ${err instanceof Error ? err.message : String(err)}`
         );

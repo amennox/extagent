@@ -7,7 +7,7 @@ import { logWithTimestamp } from './utils';
  * Initialize the extension
  */
 function initializeExtension(): void {
-  logWithTimestamp('InfinitAgent extension initialized');
+  logWithTimestamp('DomMotion extension initialized');
 
   // Set up message listeners
   setupMessageListeners();
@@ -50,7 +50,7 @@ function setupEventListeners(): void {
 
   // Open options page when the extension is first installed
   chrome.runtime.onInstalled.addListener((details) => {
-    logWithTimestamp('InfinitAgent extension installed');
+    logWithTimestamp('DomMotion extension installed');
 
     if (details.reason === 'install') {
       chrome.runtime.openOptionsPage();
@@ -109,7 +109,7 @@ function setupEventListeners(): void {
       // Delete the memory database on uninstall/disable
       try {
         logWithTimestamp('Deleting memory database');
-        const request = indexedDB.deleteDatabase('infinit-agent-memories');
+        const request = indexedDB.deleteDatabase('dom-motion-memories');
 
         request.onsuccess = () => {
           logWithTimestamp('Memory database deleted successfully');
@@ -136,7 +136,7 @@ function setupEventListeners(): void {
       // Delete the memory database before update
       try {
         logWithTimestamp('Deleting memory database before update');
-        const request = indexedDB.deleteDatabase('infinit-agent-memories');
+        const request = indexedDB.deleteDatabase('dom-motion-memories');
 
         request.onsuccess = () => {
           logWithTimestamp('Memory database deleted successfully before update');

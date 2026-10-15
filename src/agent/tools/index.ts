@@ -3,7 +3,6 @@ import { LLMProvider } from "../../models/providers/types";
 import { playAutomation } from "./automationTools";
 import { extractWithSchema, paginateAndCollect } from "./extractionTools";
 import { fillFormFromData } from "./formTools";
-import { useSkill } from "./skillTools";
 
 // Import all tools from their respective modules
 import { 
@@ -43,6 +42,10 @@ import {
   browserReadText, 
   browserScreenshot 
 } from "./observationTools";
+import { useSkill } from "./skillTools";
+import { browserInteractiveMap, browserClickRef, browserFillRef, browserSelectRef } from "./pageMapTools";
+import { browserWaitForStability } from "./stability";
+import { smartExtract } from "./smartExtractTool";
 import {
   browserGetActiveTab,
   browserNavigateTab,
@@ -62,7 +65,7 @@ import {
 import { ToolFactory } from "./types";
 
 // Re-export extraction, form, automation, and skill tools for direct use
-export { extractWithSchema, paginateAndCollect, fillFormFromData, playAutomation, useSkill };
+export { extractWithSchema, paginateAndCollect, fillFormFromData, playAutomation, useSkill, smartExtract };
 
 // Export all tools
 export {
@@ -169,12 +172,20 @@ export function getAllTools(page: Page, llmProvider?: LLMProvider) {
     playAutomation(page),
 
     // Skill tools
-    useSkill(page),
+    useSkill(page, llmProvider),
+
+    // Page perception (SPA-aware)
+    browserWaitForStability(page),
+    browserInteractiveMap(page),
+    browserClickRef(page),
+    browserFillRef(page),
+    browserSelectRef(page),
   ];
 
   if (llmProvider) {
     tools.push(extractWithSchema(page, llmProvider));
     tools.push(paginateAndCollect(page, llmProvider));
+    tools.push(smartExtract(page, llmProvider));
   }
 
   return tools;

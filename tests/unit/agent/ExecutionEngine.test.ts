@@ -196,7 +196,8 @@ describe('ExecutionEngine', () => {
 
       await executionEngine.executePrompt('Long operation', mockCallbacks, [], false);
 
-      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('Execution cancelled by user'));
+      // Message is localized (default lang: it)
+      expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('annullata'));
     });
 
     it('should handle streaming mode', async () => {
@@ -279,11 +280,16 @@ describe('ExecutionEngine', () => {
     });
 
     it('should trigger fallback on streaming errors', async () => {
-      // First call fails, second call succeeds
+      // Streaming attempts (with per-step retries) keep failing, non-streaming fallback succeeds
+      executionEngine.setStepRetryDelayMs(0);
+      jest.spyOn(errorHandler, 'isStreamingSupported').mockResolvedValue(true);
+
+      let streamingFailed = false;
       let callCount = 0;
       mockProvider.createMessage.mockImplementation(() => {
         callCount++;
-        if (callCount === 1) {
+        if (callCount <= 3) {
+          streamingFailed = true;
           throw new Error('Streaming failed');
         }
         return (async function* () {
@@ -294,6 +300,7 @@ describe('ExecutionEngine', () => {
 
       await executionEngine.executePromptWithFallback('Test', mockCallbacks);
 
+      expect(streamingFailed).toBe(true);
       expect(mockCallbacks.onFallbackStarted).toHaveBeenCalled();
       expect(mockCallbacks.onLlmOutput).toHaveBeenCalledWith('Fallback execution');
       expect(mockCallbacks.onComplete).toHaveBeenCalled();
@@ -306,12 +313,13 @@ describe('ExecutionEngine', () => {
 
       // Mock ErrorHandler to recognize this as retryable
       jest.spyOn(errorHandler, 'isRetryableError').mockReturnValue(true);
-      jest.spyOn(errorHandler, 'calculateBackoffTime').mockReturnValue(100);
+      jest.spyOn(errorHandler, 'calculateBackoffTime').mockReturnValue(10);
+      executionEngine.setStepRetryDelayMs(0);
 
       let callCount = 0;
       mockProvider.createMessage.mockImplementation(() => {
         callCount++;
-        if (callCount === 1) {
+        if (callCount <= 3) {
           throw rateLimitError;
         }
         return (async function* () {
@@ -369,6 +377,116 @@ describe('ExecutionEngine', () => {
       
       expect(tokenTracker.trackInputTokens).toHaveBeenCalledWith(15, { read: 5, write: undefined });
       expect(tokenTracker.trackOutputTokens).toHaveBeenCalledWith(10);
+    });
+  });
+
+  describe('empty response handling', () => {
+    function makeCallbacks(): ExecutionCallbacks {
+      return {
+        onLlmOutput: jest.fn(),
+        onToolOutput: jest.fn(),
+        onComplete: jest.fn(),
+      };
+    }
+
+    it('una risposta vuota NON termina il task: nudge e retry', async () => {
+      let call = 0;
+      mockProvider.createMessage.mockImplementation((_sys: any, messages: any[]) => (async function* () {
+        if (call++ === 0) {
+          // Il modello brucia tutto nel reasoning: nessun testo visibile
+          yield { type: 'reasoning', reasoning: 'sto pensando a lungo...' };
+        } else {
+          // Al retry (dopo il nudge) risponde normalmente
+          yield { type: 'text', text: 'Task completato: news inserita.' };
+        }
+        yield { type: 'usage', inputTokens: 10, outputTokens: 5 };
+      })());
+
+      const cb = makeCallbacks();
+      await executionEngine.executePrompt('Inserisci news', cb, [], false);
+
+      expect(call).toBe(2); // ha riprovato invece di fermarsi
+      expect(cb.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('Task completato'));
+      expect(executionEngine.getLastRunStats().outcome).toBe('success');
+      // Il nudge deve essere entrato nella history della seconda chiamata
+      const secondCallMessages = mockProvider.createMessage.mock.calls[1][1];
+      expect(JSON.stringify(secondCallMessages)).toContain('response was empty');
+    });
+
+    it('risposte vuote persistenti → outcome failure, mai finto successo', async () => {
+      mockProvider.createMessage.mockImplementation(() => (async function* () {
+        yield { type: 'reasoning', reasoning: 'solo reasoning' };
+      })());
+
+      const cb = makeCallbacks();
+      await executionEngine.executePrompt('Test', cb, [], false);
+
+      expect(executionEngine.getLastRunStats().outcome).toBe('failure');
+      expect(cb.onLlmOutput).toHaveBeenCalledWith(expect.stringContaining('risposte vuote'));
+    });
+  });
+
+  describe('debug mode', () => {
+    function makeCallbacks(): ExecutionCallbacks & { onDebug: jest.Mock } {
+      return {
+        onLlmOutput: jest.fn(),
+        onToolOutput: jest.fn(),
+        onComplete: jest.fn(),
+        onDebug: jest.fn(),
+      };
+    }
+
+    it('non emette debug quando la modalità è disattivata (default)', async () => {
+      mockProvider.createMessage.mockReturnValue((async function* () {
+        yield { type: 'reasoning', reasoning: 'sto pensando' };
+        yield { type: 'text', text: 'Risposta' };
+        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
+      })());
+      const cb = makeCallbacks();
+
+      await executionEngine.executePrompt('Test', cb, [], false);
+
+      expect(cb.onDebug).not.toHaveBeenCalled();
+    });
+
+    it('con debug on emette la richiesta e la risposta grezza (incl. reasoning)', async () => {
+      executionEngine.setDebugMode(true);
+      mockProvider.createMessage.mockReturnValue((async function* () {
+        yield { type: 'reasoning', reasoning: 'ragionamento nascosto' };
+        yield { type: 'text', text: 'Risposta finale' };
+        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
+      })());
+      const cb = makeCallbacks();
+
+      await executionEngine.executePrompt('Test', cb, [], false);
+
+      const labels = cb.onDebug.mock.calls.map(c => c[0]);
+      expect(labels).toContain('→ LLM request');
+      expect(labels).toContain('← LLM raw response');
+      const rawCall = cb.onDebug.mock.calls.find(c => c[0] === '← LLM raw response')!;
+      expect(rawCall[1]).toContain('ragionamento nascosto');
+      expect(rawCall[1]).toContain('Risposta finale');
+    });
+
+    it('con debug on emette il risultato completo del tool', async () => {
+      executionEngine.setDebugMode(true);
+      let call = 0;
+      mockProvider.createMessage.mockImplementation(() => (async function* () {
+        if (call++ === 0) {
+          yield { type: 'text', text: '<tool>browser_click</tool><input>#btn</input><requires_approval>false</requires_approval>' };
+        } else {
+          yield { type: 'text', text: 'Fatto.' };
+        }
+        yield { type: 'usage', inputTokens: 5, outputTokens: 3 };
+      })());
+      mockToolFunctions[2].mockResolvedValue('Element clicked OK');
+      const cb = makeCallbacks();
+
+      await executionEngine.executePrompt('Click', cb, [], false);
+
+      const toolDebug = cb.onDebug.mock.calls.find(c => String(c[0]).includes('tool result'));
+      expect(toolDebug).toBeDefined();
+      expect(toolDebug![1]).toContain('Element clicked OK');
     });
   });
 });

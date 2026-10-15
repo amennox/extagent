@@ -48,7 +48,7 @@ describe('Interaction Tools', () => {
 
       const result = await tool.func('.cta-button');
 
-      expect(result).toBe('Clicked selector: .cta-button');
+      expect(result).toContain('Clicked selector: .cta-button');
       expect(mockPage.click).toHaveBeenCalledWith('.cta-button');
     });
 
@@ -61,7 +61,7 @@ describe('Interaction Tools', () => {
 
       const result = await tool.func('Get Started');
 
-      expect(result).toBe('Clicked element containing text: Get Started');
+      expect(result).toContain('Clicked element containing text: Get Started');
       expect(mockPage.getByText).toHaveBeenCalledWith('Get Started');
       expect(mockGetByText.click).toHaveBeenCalled();
     });
@@ -124,7 +124,7 @@ describe('Interaction Tools', () => {
 
       const result = await tool.func('input[name="name"]|John Doe');
 
-      expect(result).toBe('Typed "John Doe" into input[name="name"]');
+      expect(result).toContain('Typed "John Doe" into input[name="name"]');
       expect(mockPage.fill).toHaveBeenCalledWith('input[name="name"]', 'John Doe');
     });
 
@@ -135,7 +135,7 @@ describe('Interaction Tools', () => {
       const complexText = 'Hello! @#$%^&*()_+ World\nNew Line';
       const result = await tool.func(`textarea[name="message"]|${complexText}`);
 
-      expect(result).toBe(`Typed "${complexText}" into textarea[name="message"]`);
+      expect(result).toContain(`Typed "${complexText}" into textarea[name="message"]`);
       expect(mockPage.fill).toHaveBeenCalledWith('textarea[name="message"]', complexText);
     });
 
@@ -145,7 +145,7 @@ describe('Interaction Tools', () => {
 
       const result = await tool.func('input[type="email"]|john@example.com');
 
-      expect(result).toBe('Typed "john@example.com" into input[type="email"]');
+      expect(result).toContain('Typed "john@example.com" into input[type="email"]');
       expect(mockPage.fill).toHaveBeenCalledWith('input[type="email"]', 'john@example.com');
     });
 
@@ -338,8 +338,8 @@ describe('Interaction Tools', () => {
       const clickResult = await clickTool.func('input[name="username"]');
       const typeResult = await typeTool.func('input[name="username"]|testuser');
 
-      expect(clickResult).toBe('Clicked selector: input[name="username"]');
-      expect(typeResult).toBe('Typed "testuser" into input[name="username"]');
+      expect(clickResult).toContain('Clicked selector: input[name="username"]');
+      expect(typeResult).toContain('Typed "testuser" into input[name="username"]');
     });
 
     it('should work with all withActivePage calls', async () => {

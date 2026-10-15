@@ -1,4 +1,6 @@
 import type { Page } from "playwright-crx";
+import { ActionLog } from "../../tracking/actionLog";
+import { settleAfterAction } from "./stability";
 import { ToolFactory } from "./types";
 import { withActivePage, getCurrentTabId } from "./utils";
 
@@ -38,7 +40,9 @@ export const browserNavigate: ToolFactory = (page: Page) =>
             console.error("Error updating UI after navigation:", titleError);
           }
           
-          return `Successfully navigated to ${url}`;
+          ActionLog.push({ type: 'navigate', url, description: `navigate to ${url}` });
+          const settle = await settleAfterAction(activePage);
+          return `Successfully navigated to ${url} · ${settle}`;
         });
       } catch (error) {
         return `Error navigating to ${url}: ${

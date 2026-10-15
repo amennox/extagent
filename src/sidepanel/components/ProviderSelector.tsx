@@ -1,8 +1,8 @@
 import { faCog, faCircleInfo } from '@fortawesome/free-solid-svg-icons';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import React, { useEffect, useState } from 'react';
-import { useLang } from '../../i18n';
 import { ConfigManager } from '../../background/configManager';
+import { useLang } from '../../i18n';
 import { TokenTrackingService } from '../../tracking/tokenTrackingService';
 
 interface ProviderOption {

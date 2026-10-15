@@ -2,12 +2,28 @@ const KEY_RECORDINGS = 'recordings';
 const KEY_ACTIVE = 'activeRecording';
 
 export interface RecordingStep {
-  type: 'click' | 'type' | 'navigate' | 'select' | 'wait';
+  type: 'click' | 'type' | 'navigate' | 'select' | 'check' | 'press' | 'wait';
+  /** Primary CSS selector */
   selector?: string;
+  /** Alternative locators, most robust first (used by self-healing replay) */
+  candidates?: string[];
+  /** Typed text / selected value / pressed key */
   text?: string;
+  /** Target URL for navigate steps */
   url?: string;
+  /** Page context at capture time */
+  pageUrl?: string;
+  pageTitle?: string;
+  /** Visible text of the target element (buttons, links) */
+  elementText?: string;
+  /** Associated label text (form fields) */
+  elementLabel?: string;
+  /** Short snippet of surrounding content (max ~300 chars) */
+  context?: string;
+  /** @deprecated kept for backward compatibility with old recordings */
   snapshotBefore?: string;
   description?: string;
+  timestamp?: number;
 }
 
 export interface Recording {

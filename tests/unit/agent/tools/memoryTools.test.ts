@@ -254,19 +254,22 @@ describe('Memory Tools', () => {
       expect(result).toBe('No memories found for domain: example.com');
     });
 
-    it('should sort memories by creation date (newest first)', async () => {
+    it('should preserve the ranked order returned by the service', async () => {
       const tool = lookupMemories(mockPage);
+      // The service returns memories already ranked (validated → useCount → recency)
       const mockMemories = [
         {
           domain: 'example.com',
-          taskDescription: 'Older task',
-          toolSequence: ['browser_click'],
+          taskDescription: 'Validated task',
+          toolSequence: ['browser_fill'],
+          validated: true,
           createdAt: 1640995200000
         },
         {
           domain: 'example.com',
-          taskDescription: 'Newer task',
-          toolSequence: ['browser_fill'],
+          taskDescription: 'Newer but unvalidated task',
+          toolSequence: ['browser_click'],
+          validated: false,
           createdAt: 1640995300000
         }
       ];
@@ -276,8 +279,8 @@ describe('Memory Tools', () => {
       const result = await tool.func('example.com');
       const parsedResult = JSON.parse(result);
 
-      expect(parsedResult[0].taskDescription).toBe('Newer task');
-      expect(parsedResult[1].taskDescription).toBe('Older task');
+      expect(parsedResult[0].taskDescription).toBe('Validated task');
+      expect(parsedResult[1].taskDescription).toBe('Newer but unvalidated task');
     });
 
     it('should handle invalid domain', async () => {

@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { MemoryManager, Memory } from '../../agent/MemoryManager';
-import { Section } from './Section';
 import { Button, Chip, IconButton, LucideIcon, EmptyState } from '../../ui';
+import { Section } from './Section';
 
 function formatDate(iso: string): string {
   const days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);

@@ -42,9 +42,21 @@ export async function getCurrentTabId(page: Page): Promise<number | undefined> {
   return undefined;
 }
 
-// Constants for output size limits
-export const MAX_RETURN_CHARS = 20000;
+// Output size limits.
+// MAX_RETURN_CHARS is dynamic: it is derived from the active profile's context
+// window (see setMaxReturnChars, wired in ExecutionEngine.setActiveProfile).
+// Default assumes the 256k default context window (~10% → 25.6k tokens ≈ 100k chars).
+const DEFAULT_MAX_RETURN_CHARS = 100_000;
+const MIN_RETURN_CHARS = 20_000;
+export let MAX_RETURN_CHARS = DEFAULT_MAX_RETURN_CHARS;
 export const MAX_SCREENSHOT_CHARS = 500000;
+
+/** Set the observation char limit (floored at 20k). Pass undefined to restore the default. */
+export function setMaxReturnChars(chars?: number): void {
+  MAX_RETURN_CHARS = chars === undefined
+    ? DEFAULT_MAX_RETURN_CHARS
+    : Math.max(MIN_RETURN_CHARS, Math.floor(chars));
+}
 
 /**
  * Helper function to execute a function with the active page from PageContextManager

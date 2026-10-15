@@ -32,6 +32,11 @@ export const TOOL_DESCRIPTIONS_IT: Record<string, string> = {
   extract_with_schema: "Estrae dati strutturati dalla pagina come JSON conforme allo schema. Input: JSON {schema, hint?, useAccessibilityTree?}.",
   paginate_and_collect: "Raccoglie dati su più pagine con extract_with_schema. Input: JSON {schema, nextButtonSelector?, nextButtonText?, maxPages?, deduplicateField?}.",
   fill_form_from_data: "Compila i campi di un form da un payload strutturato. NON fa submit. Input: JSON {data: {campo: valore}, submitSelector?}.",
-  play_automation: "Riproduce una sequenza registrata step by step usando i tool browser. Input: JSON {recordingName, instruction?, confirmBeforeEachStep?}.",
-  use_skill: "Esegue una skill salvata per titolo. Interpreta i passi (navigate, extract, paginate, fill, play) e restituisce il prompt di esecuzione. Input: JSON {skillTitle, params?}.",
+  play_automation: "Riproduce una registrazione in modo deterministico (selettori salvati). Supporta {{param}} e {{oggi}}. Se fallisce restituisce failedStep e recovery. Input: JSON {recordingName, params?}.",
+  use_skill: "Esegue una skill salvata per titolo: passi deterministici (navigate, play, extract, paginate, fill, compute, export) con sostituzione {{param}}. Input: JSON {skillTitle, params?}.",
+  browser_interactive_map: "Mappa NUMERATA degli elementi interattivi visibili (bottoni, link, campi) con ruolo, label, valore e stato. Usala come osservazione principale e agisci sui numeri.",
+  browser_click_ref: "Clicca un elemento per numero dalla mappa interattiva. Input: il numero (es. 12). Il risultato include i cambiamenti della pagina.",
+  browser_fill_ref: "Compila un campo per numero dalla mappa interattiva. Input: \"numero|testo\" (es. 7|Rossi SRL). Genera eventi nativi (ok per React/Vue).",
+  browser_select_ref: "Seleziona un'opzione in un <select> nativo per numero dalla mappa. Input: \"numero|opzione\".",
+  browser_wait_for_stability: "Attende che il DOM smetta di cambiare (rendering SPA concluso). Input opzionale: JSON {quietMs?, timeoutMs?}.",
 };

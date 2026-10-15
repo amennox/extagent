@@ -1,4 +1,6 @@
 import type { Page } from "playwright-crx";
+import { ActionLog } from "../../tracking/actionLog";
+import { settleAfterAction } from "./stability";
 import { ToolFactory } from "./types";
 import { installDialogListener, lastDialog, resetDialog, withActivePage } from "./utils";
 
@@ -10,12 +12,19 @@ export const browserClick: ToolFactory = (page: Page) =>
     func: async (input: string) => {
       try {
         return await withActivePage(page, async (activePage) => {
+          let detail: string;
           if (/[#.[]/.test(input)) {
             await activePage.click(input);
-            return `Clicked selector: ${input}`;
+            ActionLog.push({ type: 'click', selector: input, candidates: [input], description: `click ${input}` });
+            detail = `Clicked selector: ${input}`;
+          } else {
+            await activePage.getByText(input).click();
+            ActionLog.push({ type: 'click', selector: `text=${input}`, candidates: [`text=${input}`], elementText: input, description: `click "${input}"` });
+            detail = `Clicked element containing text: ${input}`;
           }
-          await activePage.getByText(input).click();
-          return `Clicked element containing text: ${input}`;
+          // SPA-aware settle: wait for the render triggered by the click
+          const settle = await settleAfterAction(activePage);
+          return `${detail} · ${settle}`;
         });
       } catch (error) {
         return `Error clicking '${input}': ${
@@ -33,12 +42,16 @@ export const browserType: ToolFactory = (page: Page) =>
     func: async (input: string) => {
       try {
         return await withActivePage(page, async (activePage) => {
-          const [selector, text] = input.split("|");
+          const sepIndex = input.indexOf("|");
+          const selector = sepIndex >= 0 ? input.slice(0, sepIndex) : '';
+          const text = sepIndex >= 0 ? input.slice(sepIndex + 1) : '';
           if (!selector || !text) {
             return "Error: expected 'selector|text'";
           }
           await activePage.fill(selector, text);
-          return `Typed "${text}" into ${selector}`;
+          ActionLog.push({ type: 'type', selector, candidates: [selector], text, description: `type in ${selector}` });
+          const settle = await settleAfterAction(activePage);
+          return `Typed "${text}" into ${selector} · ${settle}`;
         });
       } catch (error) {
         return `Error typing into '${input}': ${

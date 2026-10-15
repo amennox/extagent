@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { TaskEntry } from '../hooks/useTaskHistory';
-import { Chip } from '../../ui';
+import React from 'react';
+import { useLang } from '../../i18n';
 import { LucideIcon } from '../../ui';
+import { TaskEntry } from '../hooks/useTaskHistory';
 
 interface TaskHistoryProps {
   history: TaskEntry[];
@@ -9,58 +9,56 @@ interface TaskHistoryProps {
 }
 
 export function TaskHistory({ history, onRerun }: TaskHistoryProps) {
-  const [open, setOpen] = useState(false);
+  const { t } = useLang();
 
-  if (history.length === 0) return null;
+  if (history.length === 0) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+        gap: 8, padding: '32px 12px', color: 'var(--text-muted)', textAlign: 'center',
+      }}>
+        <LucideIcon name="History" size={28} />
+        <div style={{ fontSize: 12.5 }}>{t('history.empty')}</div>
+      </div>
+    );
+  }
 
   return (
-    <div style={{ padding: '0 14px 8px', flex: '0 0 auto' }} data-testid="task-history">
-      <button
-        onClick={() => setOpen(o => !o)}
-        data-testid="btn-toggle-history"
-        style={{
-          height: 28, width: '100%', padding: '0 8px', borderRadius: 6, border: 0,
-          background: 'transparent', cursor: 'pointer', fontFamily: 'inherit',
-          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-          color: 'var(--text-muted)',
-        }}
-      >
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 600 }}>
-          <LucideIcon name="History" size={13} /> History
-          <Chip size="xs">{history.length}</Chip>
-        </span>
-        <LucideIcon name={open ? 'ChevronDown' : 'ChevronRight'} size={13} />
-      </button>
-      {open && (
-        <div className="ia-expand-in" style={{ paddingTop: 4, display: 'flex', flexDirection: 'column' }} data-testid="history-list">
-          {[...history].reverse().map((entry) => (
-            <div
-              key={entry.id}
-              className="ia-row-hover"
-              data-testid={`history-item-${entry.id}`}
-              style={{
-                height: 30, padding: '0 8px', borderRadius: 6,
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-              }}
-            >
-              <span style={{ fontSize: 11.5, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {entry.prompt.length > 60 ? entry.prompt.slice(0, 60) + '…' : entry.prompt}
-              </span>
-              <button
-                title="Re-run"
-                onClick={() => onRerun(entry.prompt)}
-                data-testid={`btn-rerun-${entry.id}`}
-                style={{
-                  background: 'transparent', border: 0, padding: 4, cursor: 'pointer',
-                  color: 'var(--text-muted)', display: 'inline-flex', borderRadius: 4, flex: '0 0 auto',
-                }}
-              >
-                <LucideIcon name="RotateCcw" size={12} />
-              </button>
-            </div>
-          ))}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }} data-testid="task-history">
+      {[...history].reverse().map((entry) => (
+        <div
+          key={entry.id}
+          data-testid={`history-item-${entry.id}`}
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            padding: '9px 11px', borderRadius: 'var(--radius-md)',
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            transition: 'background .12s',
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--surface-2)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--surface)'; }}
+        >
+          <span style={{
+            fontSize: 12, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            fontWeight: 500,
+          }}>
+            {entry.prompt.length > 60 ? entry.prompt.slice(0, 60) + '…' : entry.prompt}
+          </span>
+          <button
+            title={t('history.rerun')}
+            onClick={() => onRerun(entry.prompt)}
+            data-testid={`btn-rerun-${entry.id}`}
+            style={{
+              background: 'transparent', border: 0, padding: 4, cursor: 'pointer',
+              color: 'var(--text-muted)', display: 'inline-flex', borderRadius: 6, flex: '0 0 auto',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--primary)'; e.currentTarget.style.background = 'var(--primary-soft)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.background = 'transparent'; }}
+          >
+            <LucideIcon name="RotateCcw" size={13} />
+          </button>
         </div>
-      )}
+      ))}
     </div>
   );
 }

@@ -19,7 +19,18 @@ export function truncateObservation(text: string, budgetTokens: number): string 
   return text.slice(0, budgetChars) + '[...troncato]';
 }
 
-const DEFAULT_CONTEXT_WINDOW = 32_000;
+export const DEFAULT_CONTEXT_WINDOW = 256_000;
+export const MIN_CONTEXT_WINDOW = 64_000;
+
+/**
+ * Char budget for a single DOM/page observation, proportional to the
+ * context window (~10% of the window, in chars ≈ tokens*4).
+ * 64k → ~25k chars, 256k (default) → ~100k chars.
+ */
+export function observationCharBudget(contextWindowSize: number): number {
+  const tokens = Math.max(contextWindowSize, MIN_CONTEXT_WINDOW);
+  return Math.floor(tokens * 0.10) * 4;
+}
 
 export function trimHistory(
   msgs: Message[],

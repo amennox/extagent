@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { LucideIcon } from '../../../ui';
 import { useLang } from '../../../i18n';
+import { LucideIcon } from '../../../ui';
 
 // ─── Data types ────────────────────────────────────────────────────────────
 
@@ -28,7 +28,7 @@ const SECTIONS_IT: HelpSection[] = [
     icon: 'Cpu',
     title: 'Configurazione LLM',
     items: [
-      { type: 'p', content: 'InfinitAgent si connette a qualsiasi endpoint OpenAI-compatibile: OpenAI, Azure, server locali con Ollama, LM Studio, vLLM, e molti altri. Dalla tab Configurazione LLM puoi gestire tutte le impostazioni del modello.' },
+      { type: 'p', content: 'DomMotion si connette a qualsiasi endpoint OpenAI-compatibile: OpenAI, Azure, server locali con Ollama, LM Studio, vLLM, e molti altri. Dalla tab Configurazione LLM puoi gestire tutte le impostazioni del modello.' },
       { type: 'h3', content: 'Credenziali' },
       { type: 'ul', content: [
         'API Key: la chiave di autenticazione del tuo provider',
@@ -88,7 +88,7 @@ const SECTIONS_IT: HelpSection[] = [
     title: 'Skill',
     defaultOpen: true,
     items: [
-      { type: 'p', content: 'Una skill è un workflow di automazione riutilizzabile, scritto come file Markdown. L\'agente legge la skill e la esegue passo dopo passo, usando i browser tool disponibili. Le skill sono lo strumento più potente di InfinitAgent: permettono di definire processi complessi una sola volta e ripeterne l\'esecuzione con un semplice comando.' },
+      { type: 'p', content: 'Una skill è un workflow di automazione riutilizzabile, scritto come file Markdown. L\'agente legge la skill e la esegue passo dopo passo, usando i browser tool disponibili. Le skill sono lo strumento più potente di DomMotion: permettono di definire processi complessi una sola volta e ripeterne l\'esecuzione con un semplice comando.' },
       { type: 'h3', content: 'Struttura di una skill' },
       { type: 'code', lang: 'markdown', content: `---
 title: Nome della skill
@@ -282,7 +282,7 @@ const SECTIONS_EN: HelpSection[] = [
     icon: 'Cpu',
     title: 'LLM Configuration',
     items: [
-      { type: 'p', content: 'InfinitAgent connects to any OpenAI-compatible endpoint: OpenAI, Azure, local servers running Ollama, LM Studio, vLLM, and many others. From the LLM Configuration tab you can manage all model settings.' },
+      { type: 'p', content: 'DomMotion connects to any OpenAI-compatible endpoint: OpenAI, Azure, local servers running Ollama, LM Studio, vLLM, and many others. From the LLM Configuration tab you can manage all model settings.' },
       { type: 'h3', content: 'Credentials' },
       { type: 'ul', content: [
         'API Key: your provider\'s authentication key',
@@ -342,7 +342,7 @@ const SECTIONS_EN: HelpSection[] = [
     title: 'Skills',
     defaultOpen: true,
     items: [
-      { type: 'p', content: 'A skill is a reusable automation workflow, written as a Markdown file. The agent reads the skill and executes it step by step, using the available browser tools. Skills are InfinitAgent\'s most powerful feature: they let you define complex processes once and repeat them with a simple command.' },
+      { type: 'p', content: 'A skill is a reusable automation workflow, written as a Markdown file. The agent reads the skill and executes it step by step, using the available browser tools. Skills are DomMotion\'s most powerful feature: they let you define complex processes once and repeat them with a simple command.' },
       { type: 'h3', content: 'Skill structure' },
       { type: 'code', lang: 'markdown', content: `---
 title: Skill name

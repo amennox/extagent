@@ -1,7 +1,8 @@
-import { OpenAICompatibleProvider, OpenAICompatibleProviderOptions, isContextOverflowError } from '../../../../src/models/providers/openai-compatible';
-import { ModelProfile } from '../../../../src/models/providers/types';
+import { OpenAICompatibleProvider, OpenAICompatibleProviderOptions, isContextOverflowError, ThinkTagFilter, stripThinkTags } from '../../../../src/models/providers/openai-compatible';
+import { ModelProfile, migrateProfile } from '../../../../src/models/providers/types';
 
 let capturedRequestBody: any = null;
+let mockStreamChunks: any[] = [];
 
 jest.mock('openai', () => {
   const MockOpenAI = jest.fn().mockImplementation(() => ({
@@ -9,7 +10,10 @@ jest.mock('openai', () => {
       completions: {
         create: jest.fn().mockImplementation(async (body: any) => {
           capturedRequestBody = body;
-          return (async function* () {})();
+          const chunks = mockStreamChunks;
+          return (async function* () {
+            for (const c of chunks) yield c;
+          })();
         }),
       },
     },
@@ -27,21 +31,19 @@ const baseOptions: OpenAICompatibleProviderOptions = {
   ],
 };
 
-const thinkingProfile: ModelProfile = {
+const reasoningProfile: ModelProfile = {
   id: 'thinking',
   name: 'Qwen3 Thinking',
   modelId: 'qwen3-35b',
-  enableThinking: true,
-  thinkingBudget: 8192,
+  reasoningEffort: 'medium',
   maxTokens: 16384,
-  temperature: 0.5, // should be overridden to 1
+  temperature: 0.5,
 };
 
 const fastProfile: ModelProfile = {
   id: 'fast',
   name: 'Qwen3 Fast',
   modelId: 'qwen3-35b',
-  enableThinking: false,
   maxTokens: 4096,
   temperature: 0,
 };
@@ -50,58 +52,219 @@ async function drainStream(stream: AsyncIterable<any>) {
   for await (const _ of stream) { /* drain */ }
 }
 
-describe('OpenAICompatibleProvider - enable_thinking nel body', () => {
-  beforeEach(() => { capturedRequestBody = null; });
+async function collectStream(stream: AsyncIterable<any>) {
+  const out: any[] = [];
+  for await (const c of stream) out.push(c);
+  return out;
+}
 
-  it('include enable_thinking=true nel body quando profile.enableThinking=true', async () => {
+function contentChunk(content: string) {
+  return { choices: [{ delta: { content } }] };
+}
+
+describe('OpenAICompatibleProvider - request body standard OpenAI', () => {
+  beforeEach(() => { capturedRequestBody = null; mockStreamChunks = []; });
+
+  it('include reasoning_effort quando il profilo lo definisce', async () => {
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], thinkingProfile));
+    await drainStream(provider.createMessage('sys', [], [], reasoningProfile));
+    expect(capturedRequestBody.reasoning_effort).toBe('medium');
+  });
+
+  it('disabilita il thinking (enable_thinking=false) quando il reasoning è off', async () => {
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [], [], fastProfile));
+    expect(capturedRequestBody.reasoning_effort).toBeUndefined();
+    // Deve essere esplicitamente false: Qwen3 locale altrimenti ragiona di default
+    expect(capturedRequestBody.enable_thinking).toBe(false);
+    expect(capturedRequestBody.chat_template_kwargs).toEqual({ enable_thinking: false });
+    expect(capturedRequestBody.thinking_budget).toBeUndefined();
+  });
+
+  it('abilita il thinking (enable_thinking=true + chat_template_kwargs) quando reasoning on', async () => {
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [], [], reasoningProfile));
+    expect(capturedRequestBody.enable_thinking).toBe(true);
+    expect(capturedRequestBody.chat_template_kwargs).toEqual({ enable_thinking: true });
+  });
+
+  it('rispetta una temperature positiva del profilo anche con reasoning on', async () => {
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [], [], reasoningProfile));
+    expect(capturedRequestBody.temperature).toBe(0.5);
+  });
+
+  it('evita il greedy (temp 0.6) quando reasoning on e temperature del profilo è 0', async () => {
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const p: ModelProfile = { ...reasoningProfile, temperature: 0 };
+    await drainStream(provider.createMessage('sys', [], [], p));
+    expect(capturedRequestBody.temperature).toBe(0.6);
+  });
+
+  it('invia sia max_completion_tokens sia max_tokens (compat server locali)', async () => {
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [], [], fastProfile));
+    expect(capturedRequestBody.max_completion_tokens).toBe(4096);
+    expect(capturedRequestBody.max_tokens).toBe(4096);
+  });
+
+  it('migra il legacy enableThinking=true in reasoning_effort=medium', async () => {
+    const legacy: ModelProfile = { ...fastProfile, enableThinking: true };
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    await drainStream(provider.createMessage('sys', [], [], legacy));
+    expect(capturedRequestBody.reasoning_effort).toBe('medium');
     expect(capturedRequestBody.enable_thinking).toBe(true);
   });
 
-  it('include enable_thinking=false nel body quando profile.enableThinking=false', async () => {
+  it('unisce extraBody nel request body (escape hatch)', async () => {
+    const profile: ModelProfile = {
+      ...fastProfile,
+      extraBody: '{"chat_template_kwargs": {"enable_thinking": false}}',
+    };
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], fastProfile));
-    expect(capturedRequestBody.enable_thinking).toBe(false);
+    await drainStream(provider.createMessage('sys', [], [], profile));
+    expect(capturedRequestBody.chat_template_kwargs).toEqual({ enable_thinking: false });
   });
 
-  it('forza temperature=1 quando enableThinking=true (indipendente dal profilo)', async () => {
+  it('ignora extraBody con JSON non valido', async () => {
+    const profile: ModelProfile = { ...fastProfile, extraBody: '{not json' };
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], thinkingProfile));
-    expect(capturedRequestBody.temperature).toBe(1);
+    await drainStream(provider.createMessage('sys', [], [], profile));
+    expect(capturedRequestBody.model).toBe('qwen3-35b');
   });
 
-  it('usa la temperature del profilo quando enableThinking=false', async () => {
+  it('applica i requestOverrides per singola chiamata (es. response_format)', async () => {
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], fastProfile));
-    expect(capturedRequestBody.temperature).toBe(0);
+    await drainStream(provider.createMessage('sys', [], [], fastProfile, { response_format: { type: 'json_object' } }));
+    expect(capturedRequestBody.response_format).toEqual({ type: 'json_object' });
+  });
+});
+
+describe('migrateProfile', () => {
+  it('converte enableThinking=true in reasoningEffort=medium', () => {
+    const p = migrateProfile({ id: 'x', name: 'x', modelId: 'm', enableThinking: true });
+    expect(p.reasoningEffort).toBe('medium');
   });
 
-  it('usa max_completion_tokens quando enableThinking=true', async () => {
-    const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], thinkingProfile));
-    expect(capturedRequestBody.max_completion_tokens).toBe(16384);
-    expect(capturedRequestBody.max_tokens).toBeUndefined();
+  it('non tocca un profilo con reasoningEffort già impostato', () => {
+    const p = migrateProfile({ id: 'x', name: 'x', modelId: 'm', enableThinking: true, reasoningEffort: 'high' });
+    expect(p.reasoningEffort).toBe('high');
   });
 
-  it('usa max_tokens quando enableThinking=false', async () => {
+  it('lascia il reasoning off se enableThinking=false', () => {
+    const p = migrateProfile({ id: 'x', name: 'x', modelId: 'm', enableThinking: false });
+    expect(p.reasoningEffort).toBeUndefined();
+  });
+});
+
+describe('Gestione reasoning dual-mode (Galene)', () => {
+  beforeEach(() => { capturedRequestBody = null; mockStreamChunks = []; });
+
+  it('emette reasoning_content come chunk reasoning, mai come text', async () => {
+    mockStreamChunks = [
+      { choices: [{ delta: { reasoning_content: 'sto pensando' } }] },
+      contentChunk('Risposta finale'),
+    ];
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], fastProfile));
-    expect(capturedRequestBody.max_tokens).toBe(4096);
-    expect(capturedRequestBody.max_completion_tokens).toBeUndefined();
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    const reasonings = chunks.filter(c => c.type === 'reasoning').map(c => c.reasoning).join('');
+    expect(texts).toBe('Risposta finale');
+    expect(reasonings).toBe('sto pensando');
   });
 
-  it('include thinking_budget se profile.thinkingBudget è definito', async () => {
+  it('filtra silenziosamente i tag <think> inline nel content', async () => {
+    mockStreamChunks = [
+      contentChunk('<think>ragionamento nascosto</think>Ciao!'),
+    ];
     const provider = new OpenAICompatibleProvider(baseOptions);
-    await drainStream(provider.createMessage('sys', [], [], thinkingProfile));
-    expect(capturedRequestBody.thinking_budget).toBe(8192);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    expect(texts).toBe('Ciao!');
+    expect(texts).not.toContain('<think>');
   });
 
-  it('non include thinking_budget se profile.thinkingBudget non è definito', async () => {
+  it('gestisce tag <think> spezzati su più chunk', async () => {
+    mockStreamChunks = [
+      contentChunk('<thi'),
+      contentChunk('nk>ragiono...</th'),
+      contentChunk('ink>Risposta'),
+    ];
     const provider = new OpenAICompatibleProvider(baseOptions);
-    const profileNobudget: ModelProfile = { ...thinkingProfile, thinkingBudget: undefined };
-    await drainStream(provider.createMessage('sys', [], [], profileNobudget));
-    expect(capturedRequestBody.thinking_budget).toBeUndefined();
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    expect(texts).toBe('Risposta');
+  });
+
+  it('recupera la tool call se il modello la mette nel canale reasoning', async () => {
+    // Alcuni endpoint instradano l'intera risposta (tool call inclusa) in reasoning_content
+    mockStreamChunks = [
+      { choices: [{ delta: { reasoning_content: 'Devo cliccare. <tool>browser_click</tool><input>#btn</input><requires_approval>false</requires_approval>' } }] },
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    expect(texts).toContain('<tool>browser_click</tool>');
+  });
+
+  it('recupera la tool call da un blocco <think> mai chiuso (troncamento)', async () => {
+    mockStreamChunks = [
+      contentChunk('<think>ragiono e poi <tool>browser_click</tool><input>#x</input><requires_approval>false</requires_approval>'),
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    expect(texts).toContain('<tool>browser_click</tool>');
+  });
+
+  it('non altera tool call XML nel content (nessun falso positivo su <tool>)', async () => {
+    mockStreamChunks = [
+      contentChunk('<think>uso il tool</think><tool>browser_click</tool><input>#btn</input><requires_approval>false</requires_approval>'),
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [], fastProfile));
+    const texts = chunks.filter(c => c.type === 'text').map(c => c.text).join('');
+    expect(texts).toBe('<tool>browser_click</tool><input>#btn</input><requires_approval>false</requires_approval>');
+  });
+});
+
+describe('ThinkTagFilter (unit)', () => {
+  it('passa testo senza tag inalterato', () => {
+    const f = new ThinkTagFilter();
+    const r = f.push('solo testo normale');
+    const rest = f.flush();
+    expect(r.text + rest.text).toBe('solo testo normale');
+    expect(r.reasoning).toBe('');
+  });
+
+  it('gestisce più blocchi think nello stesso stream', () => {
+    const f = new ThinkTagFilter();
+    const r = f.push('A<think>x</think>B<think>y</think>C');
+    expect(r.text).toBe('ABC');
+    expect(r.reasoning).toBe('xy');
+  });
+
+  it('flush emette come reasoning se lo stream termina dentro un blocco think', () => {
+    const f = new ThinkTagFilter();
+    const r = f.push('<think>incompleto');
+    const rest = f.flush();
+    expect(r.text).toBe('');
+    expect(rest.text).toBe('');
+    expect((r.reasoning + rest.reasoning)).toBe('incompleto');
+  });
+
+  it('non trattiene indefinitamente testo che somiglia a un tag', () => {
+    const f = new ThinkTagFilter();
+    const r1 = f.push('valore <thin');
+    const r2 = f.push('g> normale');
+    const rest = f.flush();
+    expect(r1.text + r2.text + rest.text).toBe('valore <thing> normale');
+  });
+});
+
+describe('stripThinkTags', () => {
+  it('rimuove i blocchi think dal testo accumulato', () => {
+    expect(stripThinkTags('<think>a\nb</think>Risultato')).toBe('Risultato');
   });
 });
 
@@ -150,7 +313,7 @@ describe('OpenAICompatibleProvider - getDefaultProfile()', () => {
   it('restituisce il profilo con id=defaultProfileId', () => {
     const provider = new OpenAICompatibleProvider({
       ...baseOptions,
-      profiles: [thinkingProfile, fastProfile],
+      profiles: [reasoningProfile, fastProfile],
       defaultProfileId: 'fast',
     });
     expect(provider.getDefaultProfile()?.id).toBe('fast');
@@ -159,7 +322,7 @@ describe('OpenAICompatibleProvider - getDefaultProfile()', () => {
   it('restituisce il primo profilo se defaultProfileId non matcha', () => {
     const provider = new OpenAICompatibleProvider({
       ...baseOptions,
-      profiles: [thinkingProfile, fastProfile],
+      profiles: [reasoningProfile, fastProfile],
       defaultProfileId: 'non-existent',
     });
     expect(provider.getDefaultProfile()?.id).toBe('thinking');
@@ -175,7 +338,7 @@ describe('OpenAICompatibleProvider - getModel()', () => {
   it('restituisce dati dal profilo default quando profiles configurati', () => {
     const provider = new OpenAICompatibleProvider({
       ...baseOptions,
-      profiles: [thinkingProfile],
+      profiles: [reasoningProfile],
       defaultProfileId: 'thinking',
     });
     const model = provider.getModel();

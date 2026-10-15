@@ -1,12 +1,13 @@
 import React from 'react';
 import { Message } from '../types';
-import { LlmContent } from './LlmContent';
-import { ScreenshotMessage } from './ScreenshotMessage';
-import { ResultDisplay } from './ResultDisplay';
+import { DebugMessage } from './DebugMessage';
 import { ExportBar } from './ExportBar';
+import { LlmBubble } from './LlmBubble';
+import { LlmContent } from './LlmContent';
+import { ResultDisplay } from './ResultDisplay';
+import { ScreenshotMessage } from './ScreenshotMessage';
 import { SystemPill } from './SystemPill';
 import { ToolCallBubble } from './ToolCallBubble';
-import { LlmBubble } from './LlmBubble';
 import { UserBubble } from './UserBubble';
 
 interface MessageDisplayProps {
@@ -31,16 +32,16 @@ export const MessageDisplay: React.FC<MessageDisplayProps> = ({
   isStreaming,
 }) => {
   if (messages.length === 0 && Object.keys(streamingSegments).length === 0) {
-    return (
-      <SystemPill>Nessun messaggio — digita qualcosa per iniziare</SystemPill>
-    );
+    return null;
   }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {messages.map((msg, index) => (
-        <div key={`msg-${index}`}>
-          {msg.type === 'system' ? (
+        <div key={`msg-${index}`} style={{ display: 'flex', flexDirection: 'column' }}>
+          {msg.type === 'debug' ? (
+            <DebugMessage label={msg.debugLabel} content={msg.content} />
+          ) : msg.type === 'system' ? (
             isUserPrompt(msg.content) ? (
               <UserBubble>{msg.content.replace(/^New prompt:\s*"?/, '').replace(/"$/, '')}</UserBubble>
             ) : parseToolCall(msg.content) ? (

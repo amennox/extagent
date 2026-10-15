@@ -5,7 +5,7 @@ interface StatusDotProps {
 }
 
 const map: Record<string, { fill: string; pulse: boolean }> = {
-  running:  { fill: 'var(--primary)', pulse: true },
+  running:  { fill: 'var(--success)', pulse: true },
   idle:     { fill: 'var(--success)', pulse: false },
   error:    { fill: 'var(--error)',   pulse: false },
   detached: { fill: 'var(--text-subtle)', pulse: false },

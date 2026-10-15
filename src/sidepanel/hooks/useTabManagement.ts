@@ -79,7 +79,7 @@ export const useTabManagement = () => {
 
         // Update the tab ID and title
         setTabId(message.newTabId);
-        setTabTitle(message.title || "New InfinitAgent Tab");
+        setTabTitle(message.title || "New DomMotion Tab");
 
         sendResponse({ received: true });
         return true;

@@ -1,14 +1,14 @@
 import React, { useState } from 'react';
-import { FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { useLang } from '../../i18n';
-import { GeneralTab } from './tabs/GeneralTab';
-import { ProvidersTab } from './tabs/ProvidersTab';
-import { MemoryTab } from './tabs/MemoryTab';
-import { SkillsTab } from './tabs/SkillsTab';
-import { DomainProfilesTab } from './tabs/DomainProfilesTab';
-import { HelpTab } from './tabs/HelpTab';
+import { FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { OptionsSidebar } from './OptionsSidebar';
 import { PageHeader } from './PageHeader';
+import { DomainProfilesTab } from './tabs/DomainProfilesTab';
+import { GeneralTab } from './tabs/GeneralTab';
+import { HelpTab } from './tabs/HelpTab';
+import { MemoryTab } from './tabs/MemoryTab';
+import { ProvidersTab } from './tabs/ProvidersTab';
+import { SkillsTab } from './tabs/SkillsTab';
 
 interface VerticalTabsProps {
   openaiCompatibleApiKey: string;
@@ -30,15 +30,15 @@ interface VerticalTabsProps {
 
 export function VerticalTabs(props: VerticalTabsProps) {
   const [activeTab, setActiveTab] = useState('general');
-  const { t, lang } = useLang();
+  const { t } = useLang();
 
-  const titles: Record<string, { t: string; s: string }> = {
-    general:   { t: t('options.tabs.general'),  s: 'Comportamento di base, lingua e prompt di sistema.' },
-    providers: { t: t('options.tabs.llm'),       s: 'API key, profili modello e routing per funzione.' },
-    memory:    { t: t('options.tabs.memory'),    s: 'Cosa l\'agente ricorda tra sessioni.' },
-    skills:    { t: t('options.tabs.skills'),    s: 'Workflow riutilizzabili scritti in Markdown.' },
-    profiles:  { t: t('options.tabs.profiles'),  s: 'Comportamento e selettori specifici per sito.' },
-    help:      { t: t('options.tabs.help'),      s: lang === 'it' ? 'Guide, esempi e riferimento ai tool.' : 'Guides, examples and tool reference.' },
+  const titles: Record<string, { title: string; subtitle: string }> = {
+    general:   { title: t('options.tabs.general'),  subtitle: t('options.subtitles.general') },
+    providers: { title: t('options.tabs.llm'),       subtitle: t('options.subtitles.providers') },
+    memory:    { title: t('options.tabs.memory'),    subtitle: t('options.subtitles.memory') },
+    skills:    { title: t('options.tabs.skills'),    subtitle: t('options.subtitles.skills') },
+    profiles:  { title: t('options.tabs.profiles'),  subtitle: t('options.subtitles.profiles') },
+    help:      { title: t('options.tabs.help'),      subtitle: t('options.subtitles.help') },
   };
 
   const renderTabContent = () => {
@@ -81,14 +81,14 @@ export function VerticalTabs(props: VerticalTabsProps) {
   const cur = titles[activeTab] ?? titles.general;
 
   return (
-    <div data-theme="infinit" style={{
+    <div data-theme="dommotion" style={{
       display: 'flex', minHeight: '100vh', background: 'var(--bg)',
       fontFamily: 'var(--font-sans)',
     }}>
       <OptionsSidebar active={activeTab} onChange={setActiveTab} />
       <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-        <PageHeader title={cur.t} subtitle={cur.s} />
-        <div className="ia-scroll" style={{ flex: 1, overflowY: 'auto', padding: '24px 32px 40px' }}>
+        <PageHeader title={cur.title} subtitle={cur.subtitle} />
+        <div className="ia-scroll" style={{ flex: 1, overflowY: 'auto', padding: '28px 32px 48px' }}>
           {renderTabContent()}
         </div>
       </main>

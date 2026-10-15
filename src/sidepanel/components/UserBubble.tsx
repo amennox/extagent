@@ -1,15 +1,23 @@
 import React from 'react';
+import { useLang } from '../../i18n';
 
 export function UserBubble({ children }: { children: React.ReactNode }) {
+  const { t } = useLang();
   return (
     <div style={{
-      background: 'var(--surface-2)', borderRadius: 10, padding: '10px 12px',
-      borderLeft: '2px solid var(--text-subtle)',
+      alignSelf: 'flex-end',
+      background: 'var(--primary-soft)',
+      borderRadius: '14px 14px 4px 14px',
+      padding: '10px 13px',
+      maxWidth: '92%',
     }}>
-      <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginBottom: 4, fontWeight: 600, letterSpacing: 0.4, textTransform: 'uppercase' }}>
-        You
+      <div style={{
+        fontSize: 10, color: 'var(--primary)', marginBottom: 3,
+        fontWeight: 800, letterSpacing: 0.5, textTransform: 'uppercase',
+      }}>
+        {t('sidepanel.you')}
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text)' }}>{children}</div>
+      <div style={{ fontSize: 13, color: 'var(--text)', lineHeight: 1.5, fontWeight: 500 }}>{children}</div>
     </div>
   );
 }

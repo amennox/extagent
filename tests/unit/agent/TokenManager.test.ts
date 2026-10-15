@@ -11,10 +11,10 @@ describe('TokenManager', () => {
       expect(tm.trimThreshold).toBe(5600); // Math.floor(8000 * 0.70)
     });
 
-    it('default a 32000 se contextWindowSize non specificato', () => {
+    it('default a 256000 se contextWindowSize non specificato', () => {
       const tm = new TokenManager();
-      expect(tm.contextWindowSize).toBe(32000);
-      expect(tm.trimThreshold).toBe(22400); // Math.floor(32000 * 0.70)
+      expect(tm.contextWindowSize).toBe(256000);
+      expect(tm.trimThreshold).toBe(179200); // Math.floor(256000 * 0.70)
     });
   });
 
@@ -290,9 +290,9 @@ describe('TokenManager', () => {
     });
 
     it('should use default max tokens when not specified', () => {
-      // Create messages that will definitely exceed the default limit
+      // Create messages that will definitely exceed the default limit (256k*0.7 tokens)
       const messages = Array.from({ length: 1000 }, (_, i) =>
-        createMessage(i % 2 === 0 ? 'user' : 'assistant', `This is a longer message ${i} with substantial content that will accumulate to exceed the default token limit`)
+        createMessage(i % 2 === 0 ? 'user' : 'assistant', `This is a longer message ${i} `.repeat(40) + 'with substantial content that will accumulate to exceed the default token limit')
       );
 
       const { trimmed: result } = trimHistory(messages); // No maxTokens specified
@@ -302,7 +302,7 @@ describe('TokenManager', () => {
 
       // Should be within a reasonable bound above the 70% threshold (with user message preservation)
       const resultTokens = contextTokenCount(result);
-      expect(resultTokens).toBeLessThan(30000);
+      expect(resultTokens).toBeLessThan(256000);
 
       // Should preserve all user messages
       const originalUserMessages = messages.filter(m => m.role === 'user');

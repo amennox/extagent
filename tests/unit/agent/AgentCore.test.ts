@@ -30,6 +30,7 @@ jest.mock('../../../src/background/configManager', () => ({
       getProfiles: jest.fn().mockResolvedValue([]),
       getDefaultProfileId: jest.fn().mockResolvedValue(''),
       getActiveProfile: jest.fn().mockResolvedValue(null),
+      getMaxSteps: jest.fn().mockResolvedValue(200),
     }),
   },
 }));

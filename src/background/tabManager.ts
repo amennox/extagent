@@ -858,7 +858,7 @@ export async function forceResetPlaywright(): Promise<boolean> {
   try {
     logWithTimestamp('Force resetting Playwright instance');
     
-    // Reset InfinitAgent-specific state
+    // Reset DomMotion-specific state
     currentTabId = null;
     
     // IMPORTANT: Clear the attachedTabIds set to ensure tabs are properly marked as detached

@@ -1,0 +1,24 @@
+DomMotion
+Copyright 2026 DomMotion Contributors
+
+DomMotion is a fork derived from BrowserBee, originally created by Parsa Ghaffari
+and distributed under the Apache License, Version 2.0.
+Copyright 2025 BrowserBee Contributors
+
+BrowserBee acknowledges contributions and inspiration from:
+- Cline (https://github.com/cline/cline)
+- playwright-crx by Rui Figueira (https://github.com/ruifigueira/playwright-crx)
+- playwright-mcp by Microsoft (https://github.com/microsoft/playwright-mcp)
+
+DomMotion also relies on the following open source projects:
+- Playwright (https://playwright.dev/)
+- React (https://react.dev/)
+- Vite (https://vitejs.dev/)
+- Tailwind CSS (https://tailwindcss.com/)
+- DaisyUI (https://daisyui.com/)
+- Lucide icons (https://lucide.dev/)
+
+This project is licensed under the Apache License, Version 2.0.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0

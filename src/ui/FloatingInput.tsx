@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { LucideIcon } from './LucideIcon';
 
-interface FloatingInputProps {
+export interface FloatingInputProps {
   label: string;
   value: string;
   onChange?: (v: string) => void;
+  onBlur?: () => void;
   type?: string;
   icon?: string;
   suffix?: React.ReactNode;
@@ -12,7 +13,7 @@ interface FloatingInputProps {
   placeholder?: string;
 }
 
-export function FloatingInput({ label, value, onChange, type = 'text', icon, suffix, mono, placeholder }: FloatingInputProps) {
+export function FloatingInput({ label, value, onChange, onBlur, type = 'text', icon, suffix, mono, placeholder }: FloatingInputProps) {
   const [focus, setFocus] = useState(false);
   const filled = !!value || focus;
 
@@ -20,25 +21,25 @@ export function FloatingInput({ label, value, onChange, type = 'text', icon, suf
     <div style={{ position: 'relative' }}>
       <label
         style={{
-          position: 'absolute', left: icon ? 30 : 12,
-          top: filled ? 4 : '50%',
+          position: 'absolute', left: icon ? 32 : 12,
+          top: filled ? 5 : '50%',
           transform: filled ? 'none' : 'translateY(-50%)',
-          fontSize: filled ? 10.5 : 12.5,
+          fontSize: filled ? 10 : 12.5,
           color: focus ? 'var(--primary)' : 'var(--text-muted)',
-          fontWeight: filled ? 600 : 400, letterSpacing: filled ? 0.4 : 0,
-          pointerEvents: 'none', transition: 'all .15s', textTransform: filled ? 'uppercase' : 'none',
-          background: 'transparent',
+          fontWeight: filled ? 700 : 500, letterSpacing: filled ? 0.4 : 0,
+          pointerEvents: 'none', transition: 'all .15s', textTransform: 'uppercase',
+          background: 'transparent', fontFamily: filled ? 'var(--font-mono)' : 'inherit',
         }}
       >{label}</label>
       <div style={{
         display: 'flex', alignItems: 'center',
-        height: 44, padding: icon ? '0 8px 0 10px' : '0 8px 0 12px',
+        height: 46, padding: icon ? '0 8px 0 10px' : '0 8px 0 12px',
         background: 'var(--surface)', border: `1px solid ${focus ? 'var(--primary)' : 'var(--border)'}`,
-        borderRadius: 8, transition: 'border-color .12s',
+        borderRadius: 'var(--radius-md)', transition: 'border-color .12s',
         boxShadow: focus ? '0 0 0 3px var(--primary-soft)' : 'none',
       }}>
         {icon && (
-          <span style={{ marginRight: 6, color: 'var(--text-muted)' }}>
+          <span style={{ marginRight: 8, color: 'var(--text-muted)', display: 'inline-flex' }}>
             <LucideIcon name={icon} size={14} />
           </span>
         )}
@@ -46,7 +47,7 @@ export function FloatingInput({ label, value, onChange, type = 'text', icon, suf
           value={value}
           onChange={(e) => onChange?.(e.target.value)}
           onFocus={() => setFocus(true)}
-          onBlur={() => setFocus(false)}
+          onBlur={() => { setFocus(false); onBlur?.(); }}
           type={type}
           placeholder={focus ? placeholder : ''}
           style={{

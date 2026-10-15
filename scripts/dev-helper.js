@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-console.log('\n InfiniteAgent Development Helper\n');
+console.log('\n DomMotion Development Helper\n');
 console.log('Your extension is now being built in watch mode!');
 console.log('\nTo see your changes:');
 console.log('1. Open Chrome and go to chrome://extensions/');

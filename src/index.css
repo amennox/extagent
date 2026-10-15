@@ -9,3 +9,19 @@ body {
   -webkit-font-smoothing: antialiased;
   font-feature-settings: "cv11", "ss01";
 }
+
+* {
+  box-sizing: border-box;
+}
+
+.ia-spinner {
+  display: inline-block;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ia-spin 0.75s linear infinite;
+}
+
+@keyframes ia-spin {
+  to { transform: rotate(360deg); }
+}

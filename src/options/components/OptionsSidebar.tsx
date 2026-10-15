@@ -1,6 +1,6 @@
 import React from 'react';
-import { LucideIcon } from '../../ui';
 import { useLang } from '../../i18n';
+import { LucideIcon } from '../../ui';
 
 interface Tab {
   id: string;
@@ -27,25 +27,28 @@ export function OptionsSidebar({ active, onChange }: OptionsSidebarProps) {
 
   return (
     <aside style={{
-      width: 220, flex: '0 0 220px', height: '100%',
+      width: 240, flex: '0 0 240px', minHeight: '100vh',
       background: 'var(--surface)', borderRight: '1px solid var(--border)',
-      display: 'flex', flexDirection: 'column', padding: '18px 12px 12px',
+      display: 'flex', flexDirection: 'column', padding: '22px 14px 16px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '0 6px 18px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0 8px 24px' }}>
         <div style={{
-          width: 26, height: 26, borderRadius: 7,
+          width: 28, height: 28, borderRadius: 8,
           background: 'linear-gradient(135deg, var(--primary), var(--primary-dim))',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
+          boxShadow: '0 2px 8px oklch(56% 0.19 296 / 0.25)',
         }}>
-          <span style={{ color: '#fff', fontSize: 15, fontWeight: 800, letterSpacing: -1 }}>∞</span>
+          <svg width="13" height="13" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M10 6L4.5 9.4641V2.5359L10 6Z" fill="white" />
+          </svg>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-          <span style={{ fontSize: 13.5, fontWeight: 700, letterSpacing: -0.2 }}>InfinitAgent</span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>v0.2.x</span>
+          <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: -0.3, color: 'var(--text)' }}>DomMotion</span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>v0.2.0</span>
         </div>
       </div>
 
-      <nav style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <nav style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
         {tabs.map((tab) => {
           const on = tab.id === active;
           return (
@@ -53,26 +56,26 @@ export function OptionsSidebar({ active, onChange }: OptionsSidebarProps) {
               key={tab.id}
               onClick={() => onChange(tab.id)}
               style={{
-                height: 36, padding: '0 10px', borderRadius: 8, border: 0, cursor: 'pointer',
+                height: 38, padding: '0 12px', borderRadius: 10, border: 0, cursor: 'pointer',
                 background: on ? 'var(--primary-soft)' : 'transparent',
                 color: on ? 'var(--primary)' : 'var(--text)',
-                fontWeight: on ? 600 : 500, fontSize: 13, fontFamily: 'inherit',
+                fontWeight: on ? 700 : 600, fontSize: 13, fontFamily: 'inherit',
                 display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
                 transition: 'background .12s, color .12s',
               }}
               onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = 'var(--surface-2)'; }}
               onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = 'transparent'; }}
             >
-              <LucideIcon name={tab.icon} size={16} color={on ? 'var(--primary)' : 'var(--text-muted)'} />
+              <LucideIcon name={tab.icon} size={17} color={on ? 'var(--primary)' : 'var(--text-muted)'} />
               <span>{tab.label}</span>
             </button>
           );
         })}
       </nav>
 
-      <div style={{ marginTop: 'auto', padding: '0 6px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontFamily: 'var(--font-mono)', paddingLeft: 8 }}>
-          extension v0.2.x
+      <div style={{ marginTop: 'auto', padding: '0 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ fontSize: 10, color: 'var(--text-subtle)', fontFamily: 'var(--font-mono)' }}>
+          extension v0.2.0
         </div>
       </div>
     </aside>

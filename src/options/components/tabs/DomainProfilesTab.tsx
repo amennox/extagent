@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useLang } from '../../../i18n';
 import { DomainProfile, DomainProfileManager } from '../../../agent/domainProfileManager';
-import { Section } from '../Section';
+import { useLang } from '../../../i18n';
 import { Button, Toggle } from '../../../ui';
 import { LucideIcon } from '../../../ui';
+import { Section } from '../Section';
 
 function generateId(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);

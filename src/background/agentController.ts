@@ -1,12 +1,17 @@
 import { BrowserAgent, createBrowserAgent, executePromptWithFallback, needsReinitialization } from "../agent/AgentCore";
-import { DomainProfileManager } from "../agent/domainProfileManager";
-import { setCurrentPage } from "../agent/PageContextManager";
 import { ExecutionCallbacks } from "../agent/ExecutionEngine";
+import { setCurrentPage } from "../agent/PageContextManager";
 import { contextTokenCount } from "../agent/TokenManager";
+import { DomainProfileManager } from "../agent/domainProfileManager";
+import { profilePage, profileSummary, playbookFor } from "../agent/pageProfiler";
+import { getLang, t } from "../i18n";
+import { ActionLog, setPendingRecordingName } from "../tracking/actionLog";
+import { MemoryService } from "../tracking/memoryService";
 import { ScreenshotManager } from "../tracking/screenshotManager";
 import { TokenTrackingService } from "../tracking/tokenTrackingService";
 import { ConfigManager } from "./configManager";
-import { saveReflectionMemory } from "./reflectionController";
+import { RecordingManager } from "./recordingManager";
+import { saveReflectionMemory, triggerReflection } from "./reflectionController";
 import { 
   resetStreamingState, 
   addToStreamingBuffer, 
@@ -45,11 +50,47 @@ interface MessageHistory {
   conversationHistory: GenericMessage[];
 }
 
-// Define a maximum token budget for conversation history
-const MAX_CONVERSATION_TOKENS = 100000; // 100K tokens for conversation history
+// Maximum token budget for the cross-task conversation history kept per window.
+// Aligned with the default 256k context window: same 70% threshold used by the
+// in-task trimming (TokenManager), so the two layers are consistent.
+const MAX_CONVERSATION_TOKENS = Math.floor(256000 * 0.70);
 
 // Message histories for conversation context (one per window)
 const windowMessageHistories = new Map<number, MessageHistory>();
+
+// Tracks window:domain pairs whose memories were already auto-injected
+const injectedMemoryDomains = new Set<string>();
+
+// Last task context per window: domain + memories in play (for outcome-based
+// reinforcement and 👍/👎 feedback)
+interface LastTaskInfo { domain: string; memoryIds: number[]; }
+const lastTaskInfoByWindow = new Map<number, LastTaskInfo>();
+
+async function MemoryManagerIsEnabled(): Promise<boolean> {
+  try {
+    const result = await chrome.storage.sync.get({ memoryEnabled: true });
+    return result.memoryEnabled !== false;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Apply explicit operator feedback (👍/👎) to the memories used in the last
+ * task of this window: 👍 validates them, 👎 removes provisional ones and
+ * weakens validated ones.
+ */
+export async function applyTaskFeedback(windowId: number, positive: boolean): Promise<{ affected: number }> {
+  const info = lastTaskInfoByWindow.get(windowId);
+  if (!info?.memoryIds?.length) return { affected: 0 };
+  const service = MemoryService.getInstance();
+  if (positive) {
+    await service.reinforceMemories(info.memoryIds, true);
+  } else {
+    await service.penalizeMemories(info.memoryIds);
+  }
+  return { affected: info.memoryIds.length };
+}
 
 // Map to track agent status by window ID
 const agentStatusMap = new Map<number, AgentStatusInfo>();
@@ -419,9 +460,10 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
     const providerConfig = await configManager.getProviderConfig();
     
     if (!providerConfig.apiKey) {
+      const lang = await getLang().catch(() => 'it' as const);
       sendUIMessage('updateOutput', {
         type: 'system',
-        content: `Error: API key not found. Please set your API key in the extension options.`
+        content: t('error.apiKeyMissing', lang)
       }, tabId);
       sendUIMessage('processingComplete', null, tabId);
       return;
@@ -537,15 +579,28 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
       try {
         const currentUrl = await updatedTabState.page.url();
         const currentTitle = await updatedTabState.page.title();
-        
+
+        // Profile the page structure (framework, SPA, UI kit, iframes) to pick
+        // the right interaction strategy. Fast (~50ms), non-blocking on failure.
+        let profileNote = '';
+        let playbook = '';
+        try {
+          const pageProfile = await profilePage(updatedTabState.page);
+          if (pageProfile) {
+            profileNote = ` · ${profileSummary(pageProfile)}`;
+            const lang = await getLang().catch(() => 'it' as const);
+            playbook = playbookFor(pageProfile, lang === 'en' ? 'en' : 'it');
+          }
+        } catch { /* profiling is best-effort */ }
+
         // Add a more explicit system message about the current page
-        const pageContextMessage = `Current page: ${currentUrl} (${currentTitle}) - Consider this context when executing commands. If asked to summarize, create tables, or analyze options without specific references, assume the request refers to content on this page.`;
-        
+        const pageContextMessage = `Current page: ${currentUrl} (${currentTitle})${profileNote} - Consider this context when executing commands. If asked to summarize, create tables, or analyze options without specific references, assume the request refers to content on this page.`;
+
         sendUIMessage('updateOutput', {
           type: 'system',
           content: pageContextMessage
         }, targetTabId);
-        
+
         // Set the current page context in the PromptManager
         // This will be included in the system prompt
         const updatedWindowId = updatedTabState.windowId;
@@ -557,6 +612,9 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
           const promptManager = (agent as any).promptManager;
           if (promptManager && typeof promptManager.setCurrentPageContext === 'function') {
             promptManager.setCurrentPageContext(currentUrl, currentTitle);
+          }
+          if (playbook && promptManager && typeof promptManager.setPagePlaybook === 'function') {
+            promptManager.setPagePlaybook(playbook);
           }
         }
       } catch (error) {
@@ -689,6 +747,14 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
         sendUIMessage('updateOutput', {
           type: 'system',
           content: content
+        }, targetTabId);
+      },
+      onDebug: (label, detail) => {
+        // Debug mode only: total-visibility trace rendered as a distinct block
+        sendUIMessage('updateOutput', {
+          type: 'debug',
+          debugLabel: label,
+          content: detail
         }, targetTabId);
       },
       onToolEnd: (result) => {
@@ -830,8 +896,63 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
       return;
     }
     
+    // Apply debug mode (read fresh so toggling in options takes effect on the
+    // next task without recreating the agent).
+    try {
+      const debug = await ConfigManager.getInstance().getDebugMode();
+      agent.setDebugMode(debug);
+    } catch { /* non-blocking */ }
+
     // Execute the prompt with the agent
     const messageHistory = await getMessageHistory(targetTabId);
+
+    // Auto-inject top-ranked memories for the current domain (once per
+    // window+domain in this session) so the model starts with known patterns
+    // without having to call lookup_memories itself. Also remember which
+    // memories were in play, for outcome-based reinforcement.
+    let taskDomain = '';
+    if (!isReflectionPrompt) {
+      try {
+        const pageUrl = await updatedTabState.page.url();
+        taskDomain = new URL(pageUrl).hostname;
+        const injectionKey = `${updatedWindowId}:${taskDomain}`;
+        if (taskDomain && !injectedMemoryDomains.has(injectionKey)) {
+          await agent.injectMemoriesForDomain(taskDomain, messageHistory);
+          injectedMemoryDomains.add(injectionKey);
+        }
+        if (taskDomain) {
+          const ranked = await MemoryService.getInstance().getMemoriesByDomain(taskDomain).catch(() => []);
+          lastTaskInfoByWindow.set(updatedWindowId, {
+            domain: taskDomain,
+            memoryIds: ranked.slice(0, 3).map(m => m.id!).filter(id => id !== undefined),
+          });
+        }
+      } catch {
+        // Non-blocking: continue without memory injection
+      }
+
+      // Start a fresh replayable action log for this task
+      ActionLog.reset();
+
+      // Explicit plan for long multi-step tasks: one LLM call, anchored in the
+      // history so the model keeps a checklist against drift.
+      if (prompt.length >= 120 && await ConfigManager.getInstance().getPlanningEnabled().catch(() => true)) {
+        try {
+          const lang = await getLang().catch(() => 'it' as const);
+          const plan = await agent.generatePlan(prompt, lang === 'en' ? 'en' : 'it');
+          if (plan) {
+            messageHistory.push({
+              role: 'user',
+              content: lang === 'en'
+                ? `[PLAN] Follow this plan, tick off steps as you complete them and stay on track:\n${plan}`
+                : `[PIANO] Segui questo piano, spunta i passi man mano che li completi e non deviare:\n${plan}`,
+            });
+            sendUIMessage('updateOutput', { type: 'system', content: `📋 ${plan.split('\n')[0]}…` }, targetTabId);
+          }
+        } catch { /* planning is best-effort */ }
+      }
+    }
+
     await executePromptWithFallback(
       agent,
       prompt,
@@ -839,6 +960,41 @@ export async function executePrompt(prompt: string, tabId?: number, isReflection
       messageHistory,
       isReflectionPrompt ? 'observation' : 'automation'
     );
+
+    // ── Outcome: reinforce memories, persist replayable recording, reflect ──
+    if (!isReflectionPrompt) {
+      try {
+        const stats = agent.getLastRunStats();
+        sendUIMessage('taskOutcome', { outcome: stats.outcome }, targetTabId, updatedWindowId);
+
+        if (stats.outcome === 'success') {
+          const info = lastTaskInfoByWindow.get(updatedWindowId);
+          // Memories that were in play get reinforced by the real success
+          if (info?.memoryIds?.length) {
+            await MemoryService.getInstance().reinforceMemories(info.memoryIds).catch(() => undefined);
+          }
+
+          // Persist the action log as an auto-recording (replayable memory)
+          if (taskDomain && ActionLog.size() >= 2) {
+            const recordingName = `auto: ${taskDomain} ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`;
+            try {
+              const recManager = RecordingManager.getInstance();
+              await recManager.startRecording(recordingName).catch(() => undefined);
+              for (const step of ActionLog.snapshot()) {
+                await recManager.addStep(step).catch(() => undefined);
+              }
+              await recManager.stopRecording(`Auto-generata da task riuscito su ${taskDomain}`);
+              setPendingRecordingName(recordingName);
+            } catch { /* best-effort */ }
+          }
+
+          // Auto-reflection ONLY on successful, non-trivial tasks
+          if (stats.toolCalls >= 3 && await MemoryManagerIsEnabled()) {
+            triggerReflection(targetTabId);
+          }
+        }
+      } catch { /* outcome handling is best-effort */ }
+    }
   } catch (error) {
     const errorMessage = handleError(error, 'executing prompt');
     sendUIMessage('updateOutput', {

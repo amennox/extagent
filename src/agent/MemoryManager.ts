@@ -1,3 +1,4 @@
+import { getLang, t } from "../i18n";
 import { BrowserTool } from "./tools/types";
 
 interface GenericMessage {
@@ -90,7 +91,8 @@ export class MemoryManager {
 
   async saveMemory(memory: Omit<Memory, 'id' | 'createdAt' | 'updatedAt'> & Partial<Pick<Memory, 'id' | 'createdAt' | 'updatedAt'>>): Promise<void> {
     if (/<[^>]+>/.test(memory.pattern)) {
-      throw new Error('La memoria non può contenere HTML di pagina');
+      const lang = await getLang().catch(() => 'it' as const);
+      throw new Error(t('memory.noHtml', lang));
     }
     const all = await this._loadAll();
     const now = new Date().toISOString();

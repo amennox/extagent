@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useLang } from '../../i18n';
 import { useQuickActions } from '../hooks/useQuickActions';
 import { RecordingPanel } from './RecordingPanel';
 import { SmartExtractPanel } from './SmartExtractPanel';
@@ -11,21 +12,22 @@ interface QuickActionsProps {
 
 type OpenPanel = 'smartPaste' | 'smartExtract' | 'recording' | null;
 
-const items = [
-  { id: 'smartPaste' as const,   icon: 'ClipboardPaste', label: 'Smart Paste' },
-  { id: 'smartExtract' as const, icon: 'ScanText',       label: 'Smart Extract' },
-  { id: 'recording' as const,    icon: 'CircleDot',      label: 'Automate' },
-];
-
 export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isProcessing }) => {
+  const { t } = useLang();
   const [openPanel, setOpenPanel] = useState<OpenPanel>(null);
-  const { startSmartPaste, analyzePageForExtraction, startSmartExtract } = useQuickActions({ executePrompt });
+  const { startSmartPaste, startSmartExtract } = useQuickActions({ executePrompt });
 
   const toggle = (panel: Exclude<OpenPanel, null>) =>
     setOpenPanel(prev => (prev === panel ? null : panel));
 
+  const items = [
+    { id: 'smartPaste' as const, label: t('quickactions.smartPaste') },
+    { id: 'smartExtract' as const, label: t('quickactions.smartExtract') },
+    { id: 'recording' as const, label: t('quickactions.automate') },
+  ];
+
   return (
-    <div data-testid="quick-actions">
+    <div data-testid="quick-actions" style={{ flex: '0 0 auto' }}>
       {openPanel === 'recording' && <RecordingPanel onClose={() => setOpenPanel(null)} />}
       {openPanel === 'smartPaste' && (
         <SmartPastePanel
@@ -35,28 +37,27 @@ export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isPro
       )}
       {openPanel === 'smartExtract' && (
         <SmartExtractPanel
-          analyzePageForExtraction={analyzePageForExtraction}
           onExtract={async (hint, format, paginate) => { await startSmartExtract(hint, format, paginate); setOpenPanel(null); }}
           onClose={() => setOpenPanel(null)}
         />
       )}
       <div style={{
-        display: 'flex', gap: 6, padding: '0 14px 8px', flex: '0 0 auto',
-        borderTop: '1px solid var(--border)', paddingTop: 10,
+        display: 'flex', gap: 6, padding: '0 14px 10px',
       }}>
         {items.map((it) => {
           const on = openPanel === it.id;
           const isRec = it.id === 'recording' && on;
+          const testId = it.id === 'smartPaste' ? 'btn-smart-paste' : it.id === 'smartExtract' ? 'btn-smart-extract' : 'btn-automate';
           return (
             <button
               key={it.id}
-              data-testid={`btn-${it.id === 'smartPaste' ? 'smart-paste' : it.id === 'smartExtract' ? 'smart-extract' : 'automate'}`}
+              data-testid={testId}
               onClick={() => toggle(it.id)}
               disabled={isProcessing}
               style={{
-                flex: 1, height: 30, borderRadius: 999, padding: '0 10px',
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-                fontSize: 11.5, fontWeight: 600, cursor: isProcessing ? 'not-allowed' : 'pointer',
+                flex: '1 1 0', height: 30, borderRadius: 999, padding: '0 8px', minWidth: 0,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+                fontSize: 11, fontWeight: 700, cursor: isProcessing ? 'not-allowed' : 'pointer',
                 fontFamily: 'inherit', border: '1px solid',
                 background: on ? 'var(--primary-soft)' : 'var(--surface)',
                 borderColor: on ? 'transparent' : 'var(--border)',
@@ -66,9 +67,13 @@ export const QuickActions: React.FC<QuickActionsProps> = ({ executePrompt, isPro
               }}
             >
               {isRec
-                ? <span className="ia-dot-pulse" style={{ width: 8, height: 8, borderRadius: 999, background: 'var(--error)', color: 'var(--error)' }} />
-                : <span style={{ fontSize: 11 }}>●</span>}
-              {it.label}
+                ? <span className="ia-dot-pulse" style={{ width: 7, height: 7, borderRadius: 999, background: 'var(--error)', color: 'var(--error)', flexShrink: 0 }} />
+                : <span style={{
+                    width: 7, height: 7, borderRadius: 999,
+                    background: on ? 'var(--primary)' : 'var(--text-subtle)',
+                    flexShrink: 0,
+                  }} />}
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{it.label}</span>
             </button>
           );
         })}

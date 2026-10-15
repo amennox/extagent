@@ -2,26 +2,25 @@ import React, { useState, useEffect, useRef } from 'react';
 import { ConfigManager } from '../background/configManager';
 import { useLang } from '../i18n';
 import { TokenTrackingService } from '../tracking/tokenTrackingService';
+import { EmptyState, Button, IconButton } from '../ui';
 import { ApprovalRequest } from './components/ApprovalRequest';
+import { FeedbackChips } from './components/FeedbackChips';
 import { MessageDisplay } from './components/MessageDisplay';
-import { OutputHeader } from './components/OutputHeader';
 import { PromptForm } from './components/PromptForm';
+import { QuickActions } from './components/QuickActions';
 import { SPHeader } from './components/SPHeader';
+import { TaskHistory } from './components/TaskHistory';
 import { useChromeMessaging } from './hooks/useChromeMessaging';
 import { useMessageManagement } from './hooks/useMessageManagement';
 import { useTabManagement } from './hooks/useTabManagement';
-import { QuickActions } from './components/QuickActions';
-import { TaskHistory } from './components/TaskHistory';
 import { useTaskHistory } from './hooks/useTaskHistory';
-import { EmptyState, Button } from '../ui';
 
 export function SidePanel() {
   const { t } = useLang();
 
-  // State for tab status
   const [tabStatus, setTabStatus] = useState<'attached' | 'detached' | 'unknown' | 'running' | 'idle' | 'error'>('unknown');
+  const [activeTab, setActiveTab] = useState<'output' | 'history'>('output');
 
-  // State for approval requests
   const [approvalRequests, setApprovalRequests] = useState<Array<{
     requestId: string;
     toolName: string;
@@ -29,10 +28,13 @@ export function SidePanel() {
     reason: string;
   }>>([]);
 
-  // State to track if any LLM providers are configured
+  const [currentAction, setCurrentAction] = useState<string>('');
+  const [showFeedback, setShowFeedback] = useState(false);
+
+  const pendingRef = useRef<string[]>([]);
+
   const [hasConfiguredProviders, setHasConfiguredProviders] = useState<boolean>(false);
 
-  // Check if any providers are configured when component mounts
   useEffect(() => {
     const checkProviders = async () => {
       const configManager = ConfigManager.getInstance();
@@ -42,7 +44,6 @@ export function SidePanel() {
 
     checkProviders();
 
-    // Listen for storage changes directly — more reliable than runtime messages in MV3
     const handleStorageChange = (changes: Record<string, chrome.storage.StorageChange>, area: string) => {
       if (area === 'sync' && (
         'openaiCompatibleApiKey' in changes ||
@@ -55,7 +56,6 @@ export function SidePanel() {
 
     chrome.storage.onChanged.addListener(handleStorageChange);
 
-    // Keep runtime message listener as fallback
     const handleMessage = (message: any) => {
       if (message.action === 'providerConfigChanged') {
         checkProviders();
@@ -69,12 +69,11 @@ export function SidePanel() {
     };
   }, []);
 
-  // Use custom hooks to manage state and functionality
   const {
     tabId,
     windowId,
     tabTitle,
-    setTabTitle
+    setTabTitle,
   } = useTabManagement();
 
   const {
@@ -91,53 +90,36 @@ export function SidePanel() {
     startNewSegment,
     completeStreaming,
     clearMessages,
-    currentSegmentId
   } = useMessageManagement();
 
   const { history: taskHistory, addTask, clearHistory: clearTaskHistory } = useTaskHistory();
 
-  // Heartbeat interval for checking agent status
   useEffect(() => {
     if (!isProcessing) return;
-
     const interval = setInterval(() => {
-      // Request agent status
-      chrome.runtime.sendMessage({
-        action: 'checkAgentStatus',
-        tabId,
-        windowId
-      });
-    }, 2000); // Check every 2 seconds
-
+      chrome.runtime.sendMessage({ action: 'checkAgentStatus', tabId, windowId });
+    }, 2000);
     return () => clearInterval(interval);
   }, [isProcessing, tabId, windowId]);
 
-  // Handlers for approval requests
   const handleApprove = (requestId: string) => {
-    // Send approval to the background script
     approveRequest(requestId);
-    // Remove the request from the list
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    // Add a system message to indicate approval
-    addSystemMessage(`✅ Approved action: ${requestId}`);
+    addSystemMessage(`✅ ${t('approval.approved')}: ${requestId}`);
   };
 
   const handleReject = (requestId: string) => {
-    // Send rejection to the background script
     rejectRequest(requestId);
-    // Remove the request from the list
     setApprovalRequests(prev => prev.filter(req => req.requestId !== requestId));
-    // Add a system message to indicate rejection
-    addSystemMessage(`❌ Rejected action: ${requestId}`);
+    addSystemMessage(`❌ ${t('approval.rejected')}: ${requestId}`);
   };
 
-  // Set up Chrome messaging with callbacks
   const {
     executePrompt,
     cancelExecution,
     clearHistory,
     approveRequest,
-    rejectRequest
+    rejectRequest,
   } = useChromeMessaging({
     tabId,
     windowId,
@@ -147,108 +129,71 @@ export function SidePanel() {
         try {
           msg.structuredResult = JSON.parse(content.content);
         } catch {
-          // not JSON — no structured result
+          // not JSON
         }
+      }
+      if (content.type === 'system' && typeof content.content === 'string' && content.content.includes('tool:')) {
+        const toolMatch = content.content.match(/tool:\s*(\S+)/);
+        if (toolMatch) setCurrentAction(toolMatch[1]);
       }
       addMessage(msg);
     },
-    onUpdateStreamingChunk: (content) => {
-      updateStreamingChunk(content.content);
-    },
-    onFinalizeStreamingSegment: (id, content) => {
-      finalizeStreamingSegment(id, content);
-    },
-    onStartNewSegment: (id) => {
-      startNewSegment(id);
-    },
-    onStreamingComplete: () => {
-      completeStreaming();
-    },
-    onUpdateLlmOutput: (content) => {
-      addMessage({ type: 'llm', content, isComplete: true });
-    },
+    onUpdateStreamingChunk: (content) => updateStreamingChunk(content.content),
+    onFinalizeStreamingSegment: (id, content) => finalizeStreamingSegment(id, content),
+    onStartNewSegment: (id) => startNewSegment(id),
+    onStreamingComplete: () => completeStreaming(),
+    onUpdateLlmOutput: (content) => addMessage({ type: 'llm', content, isComplete: true }),
     onRateLimit: () => {
-      addSystemMessage("⚠️ Rate limit reached. Retrying automatically...");
-      // Ensure the UI stays in processing mode
+      addSystemMessage(t('error.rateLimit'));
       setIsProcessing(true);
-      // Update the tab status to running
       setTabStatus('running');
     },
     onFallbackStarted: (message) => {
       addSystemMessage(message);
-      // Ensure the UI stays in processing mode
       setIsProcessing(true);
-      // Update the tab status to running
       setTabStatus('running');
     },
-    onUpdateScreenshot: (content) => {
-      addMessage({ ...content, isComplete: true });
-    },
+    onUpdateScreenshot: (content) => addMessage({ ...content, isComplete: true }),
     onProcessingComplete: () => {
       setIsProcessing(false);
       completeStreaming();
-      // Also update the tab status to idle to ensure the UI indicator changes
       setTabStatus('idle');
+      setCurrentAction('');
     },
-    onRequestApproval: (request) => {
-      // Add the request to the list
-      setApprovalRequests(prev => [...prev, request]);
-    },
+    onRequestApproval: (request) => setApprovalRequests(prev => [...prev, request]),
     setTabTitle,
-    // New event handlers for tab events
-    onTabStatusChanged: (status, _tabId) => {
-      // Update the tab status state
-      setTabStatus(status);
-    },
-    onTargetChanged: (_tabId, _url) => {
-      // We don't need to do anything here as TabStatusBar handles this
-    },
-    onActiveTabChanged: (oldTabId, newTabId, title, url) => {
-      // Update the tab title when the agent switches tabs
-      console.log(`SidePanel: Active tab changed from ${oldTabId} to ${newTabId}`);
+    onTabStatusChanged: (status) => setTabStatus(status),
+    onTargetChanged: () => {},
+    onActiveTabChanged: (_oldTabId, _newTabId, title, url) => {
       setTabTitle(title);
-
-      // Add a system message to indicate the tab change
-      addSystemMessage(`Switched to tab: ${title} (${url})`);
+      addSystemMessage(`${t('tab.switched')}: ${title} (${url})`);
     },
-    onPageDialog: (tabId, dialogInfo) => {
-      // Add a system message about the dialog
-      addSystemMessage(`📢 Dialog: ${dialogInfo.type} - ${dialogInfo.message}`);
+    onPageDialog: (_tabId, dialogInfo) => {
+      addSystemMessage(`${t('tab.dialog')}: ${dialogInfo.type} - ${dialogInfo.message}`);
     },
-    onPageError: (tabId, error) => {
-      // Add a system message about the error
-      addSystemMessage(`❌ Page Error: ${error}`);
+    onPageError: (_tabId, error) => {
+      addSystemMessage(`${t('tab.pageError')}: ${error}`);
     },
-    onAgentStatusUpdate: (status, lastHeartbeat) => {
-      // Log agent status updates for debugging
-      console.log(`Agent status update: ${status}, lastHeartbeat: ${lastHeartbeat}, diff: ${Date.now() - lastHeartbeat}ms`);
-
-      // Update the tab status based on agent status
+    onAgentStatusUpdate: (status) => {
       if (status === 'running' || status === 'idle' || status === 'error') {
         setTabStatus(status);
       }
-
-      // If agent is running, ensure UI is in processing mode
-      if (status === 'running') {
-        setIsProcessing(true);
-      }
-
-      // If agent is idle, ensure UI is not in processing mode
-      if (status === 'idle') {
-        setIsProcessing(false);
-      }
-    }
+      if (status === 'running') setIsProcessing(true);
+      if (status === 'idle') setIsProcessing(false);
+    },
+    onTaskOutcome: (outcome) => {
+      // Ask for feedback only on tasks that actually ran to an end state
+      setShowFeedback(outcome === 'success' || outcome === 'failure');
+    },
   });
 
-  // Handle form submission
-  const handleSubmit = async (prompt: string) => {
+  const runPrompt = async (prompt: string) => {
     addTask(prompt);
+    setShowFeedback(false);
     setIsProcessing(true);
-    // Update the tab status to running
     setTabStatus('running');
-
-    // Add a system message to indicate a new prompt
-    addSystemMessage(`New prompt: "${prompt}"`);
+    setActiveTab('output');
+    addSystemMessage(`${t('sidepanel.newPrompt')}: "${prompt}"`);
 
     try {
       await executePrompt(prompt);
@@ -256,12 +201,26 @@ export function SidePanel() {
       console.error('Error:', error);
       addSystemMessage('Error: ' + (error instanceof Error ? error.message : String(error)));
       setIsProcessing(false);
-      // Update the tab status to error
       setTabStatus('error');
     }
   };
 
-  // Ref so the executeSkillPrompt listener always calls the latest handleSubmit
+  const handleSubmit = async (prompt: string) => {
+    if (isProcessing) {
+      pendingRef.current.push(prompt);
+      addSystemMessage(t('sidepanel.queued'));
+      return;
+    }
+    await runPrompt(prompt);
+  };
+
+  useEffect(() => {
+    if (!isProcessing && pendingRef.current.length > 0) {
+      const next = pendingRef.current.shift()!;
+      runPrompt(next);
+    }
+  }, [isProcessing]);
+
   const handleSubmitRef = useRef(handleSubmit);
   useEffect(() => { handleSubmitRef.current = handleSubmit; });
 
@@ -275,59 +234,67 @@ export function SidePanel() {
     return () => chrome.runtime.onMessage.removeListener(listener);
   }, []);
 
-  // Handle cancellation - also reject any pending approval requests
   const handleCancel = () => {
-    // If there are any pending approval requests, reject them all
+    pendingRef.current = [];
     if (approvalRequests.length > 0) {
-      // Add a system message to indicate that approvals were rejected due to cancellation
-      addSystemMessage(`❌ Cancelled execution - all pending approval requests were automatically rejected`);
-
-      // Reject each pending approval request
-      approvalRequests.forEach(req => {
-        rejectRequest(req.requestId);
-      });
-
-      // Clear the approval requests
+      addSystemMessage(t('approval.cancelled'));
+      approvalRequests.forEach(req => rejectRequest(req.requestId));
       setApprovalRequests([]);
     }
-
-    // Cancel the execution
     cancelExecution();
-
-    // Update the tab status to idle
     setTabStatus('idle');
   };
 
-  // Handle clearing history
   const handleClearHistory = () => {
+    pendingRef.current = [];
+    cancelExecution();
     clearMessages();
     clearHistory();
     clearTaskHistory();
-
-    // Reset token tracking
-    const tokenTracker = TokenTrackingService.getInstance();
-    tokenTracker.reset();
+    TokenTrackingService.getInstance().reset();
+    setTabStatus('idle');
   };
 
-  // Handle reflect and learn
   const handleReflectAndLearn = () => {
-    // Send message to background script to trigger reflection
-    chrome.runtime.sendMessage({
-      action: 'reflectAndLearn',
-      tabId
-    });
-
-    // Add a system message to indicate reflection is happening
-    addSystemMessage("🧠 Reflecting on this session to learn useful patterns...");
+    chrome.runtime.sendMessage({ action: 'reflectAndLearn', tabId });
+    addSystemMessage(t('action.reflect'));
   };
 
-  // Function to navigate to the options page
-  const navigateToOptions = () => {
-    chrome.runtime.openOptionsPage();
+  /**
+   * Export the whole session (system messages, LLM output, debug traces with
+   * raw LLM responses) as a plain-text log for troubleshooting.
+   */
+  const handleExportLog = () => {
+    const lines: string[] = [
+      `DomMotion session log — ${new Date().toISOString()}`,
+      `tab: ${tabId ?? '?'} · window: ${windowId ?? '?'}`,
+      '='.repeat(70),
+      '',
+    ];
+    for (const msg of messages) {
+      const header = msg.type === 'debug'
+        ? `[DEBUG · ${msg.debugLabel ?? 'trace'}]`
+        : `[${msg.type.toUpperCase()}]`;
+      lines.push(header);
+      lines.push(msg.content ?? '');
+      lines.push('-'.repeat(70));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-');
+    a.href = url;
+    a.download = `dommotion-log-${stamp}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
+
+  const navigateToOptions = () => chrome.runtime.openOptionsPage();
+
+  const showEmpty = messages.length === 0 && Object.keys(streamingSegments).length === 0;
 
   return (
-    <div data-theme="infinit" style={{
+    <div data-theme="dommotion" style={{
       width: '100%', height: '100vh', display: 'flex', flexDirection: 'column',
       background: 'var(--bg)', position: 'relative', overflow: 'hidden',
       fontFamily: 'var(--font-sans)',
@@ -336,34 +303,88 @@ export function SidePanel() {
         tabName={tabTitle}
         tabStatus={tabStatus}
         onRefresh={() => { if (tabId) chrome.tabs.reload(tabId); }}
-        onTabClick={() => {}}
       />
 
       {hasConfiguredProviders ? (
         <>
-          <OutputHeader
-            onClearHistory={handleClearHistory}
-            onReflectAndLearn={handleReflectAndLearn}
-            isProcessing={isProcessing}
-            messageCount={messages.length}
-          />
+          {/* Tabs */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '8px 14px', flex: '0 0 auto',
+          }}>
+            <div style={{
+              display: 'flex', background: 'var(--surface-2)', borderRadius: 999, padding: 3, gap: 3,
+            }}>
+              <TabButton active={activeTab === 'output'} onClick={() => setActiveTab('output')}>
+                {t('sidepanel.output')}
+              </TabButton>
+              <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')}>
+                {t('sidepanel.history')}
+              </TabButton>
+            </div>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <IconButton icon="FileDown" size="sm" title={t('action.exportLog')} onClick={handleExportLog} />
+              <IconButton icon="BrainCircuit" size="sm" title={t('action.reflect')} onClick={handleReflectAndLearn} />
+              <IconButton icon="Trash2" size="sm" title={t('action.clear')} onClick={handleClearHistory} />
+            </div>
+          </div>
+
+          {/* Content */}
           <div
             ref={outputRef}
             className="ia-scroll"
             style={{ flex: 1, overflowY: 'auto', padding: '0 14px 12px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0 }}
           >
-            <MessageDisplay
-              messages={messages}
-              streamingSegments={streamingSegments}
-              isStreaming={isStreaming}
-            />
+            {activeTab === 'output' ? (
+              <>
+                {showEmpty && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{
+                      padding: '10px 12px', borderLeft: '3px solid var(--text-subtle)',
+                      background: 'var(--surface)', borderRadius: '0 10px 10px 0',
+                      fontSize: 12, color: 'var(--text-muted)', fontStyle: 'italic', lineHeight: 1.5,
+                    }}>
+                      {t('sidepanel.disclaimer')}
+                    </div>
+                  </div>
+                )}
+                {isProcessing && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
+                    background: 'var(--primary-soft)', borderRadius: 'var(--radius-md)',
+                    color: 'var(--primary)', fontSize: 12, fontWeight: 700, marginTop: 8,
+                  }}>
+                    <span className="ia-spinner" style={{ width: 14, height: 14 }} />
+                    <span>{currentAction ? `${t('sidepanel.running')}: ${currentAction}` : t('sidepanel.thinking')}</span>
+                  </div>
+                )}
+                <MessageDisplay
+                  messages={messages}
+                  streamingSegments={streamingSegments}
+                  isStreaming={isStreaming}
+                />
+                {showFeedback && !isProcessing && (
+                  <FeedbackChips tabId={tabId} windowId={windowId} onDone={() => setShowFeedback(false)} />
+                )}
+              </>
+            ) : (
+              <TaskHistory history={taskHistory} onRerun={handleSubmit} />
+            )}
           </div>
 
-          <QuickActions
-            executePrompt={executePrompt}
-            isProcessing={isProcessing}
-          />
-          <TaskHistory history={taskHistory} onRerun={handleSubmit} />
+          {activeTab === 'output' && approvalRequests.length > 0 && (
+            <ApprovalRequest
+              key={approvalRequests[0].requestId}
+              requestId={approvalRequests[0].requestId}
+              toolName={approvalRequests[0].toolName}
+              toolInput={approvalRequests[0].toolInput}
+              reason={approvalRequests[0].reason}
+              onApprove={handleApprove}
+              onReject={handleReject}
+            />
+          )}
+
+          <QuickActions executePrompt={executePrompt} isProcessing={isProcessing} />
           <PromptForm
             onSubmit={handleSubmit}
             onCancel={handleCancel}
@@ -381,18 +402,24 @@ export function SidePanel() {
           />
         </div>
       )}
-
-      {approvalRequests.length > 0 && (
-        <ApprovalRequest
-          key={approvalRequests[0].requestId}
-          requestId={approvalRequests[0].requestId}
-          toolName={approvalRequests[0].toolName}
-          toolInput={approvalRequests[0].toolInput}
-          reason={approvalRequests[0].reason}
-          onApprove={handleApprove}
-          onReject={handleReject}
-        />
-      )}
     </div>
+  );
+}
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        height: 28, padding: '0 14px', borderRadius: 999, border: 0, cursor: 'pointer',
+        fontSize: 12, fontWeight: active ? 700 : 600,
+        background: active ? 'var(--surface-elevated)' : 'transparent',
+        color: active ? 'var(--text)' : 'var(--text-muted)',
+        boxShadow: active ? 'var(--shadow-card)' : 'none',
+        fontFamily: 'inherit', transition: 'background .12s, color .12s',
+      }}
+    >
+      {children}
+    </button>
   );
 }

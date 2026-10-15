@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { isHomogeneousArray, toCSV, downloadCSV, downloadJSON } from '../../utils/csvExport';
 import { useLang } from '../../i18n';
+import { isHomogeneousArray, toCSV, downloadCSV, downloadJSON } from '../../utils/csvExport';
 
 interface ExportBarProps {
   result: unknown;

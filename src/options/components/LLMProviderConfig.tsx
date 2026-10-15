@@ -1,6 +1,6 @@
 import React from 'react';
-import { FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { useLang } from '../../i18n';
+import { FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { ProviderSelector } from './ProviderSelector';
 import { ProviderSettings } from './ProviderSettings';
 import { SaveButton } from './SaveButton';

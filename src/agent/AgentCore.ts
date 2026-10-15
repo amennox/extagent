@@ -3,7 +3,7 @@ import { ConfigManager, ProviderConfig } from "../background/configManager";
 import { createProvider } from "../models/providers/factory";
 import { AgentFunction, LLMProvider, ModelProfile } from "../models/providers/types";
 import { ErrorHandler } from "./ErrorHandler";
-import { ExecutionEngine, ExecutionCallbacks } from "./ExecutionEngine";
+import { ExecutionEngine, ExecutionCallbacks, DEFAULT_MAX_STEPS } from "./ExecutionEngine";
 import { MemoryManager } from "./MemoryManager";
 import { initializePageContext } from "./PageContextManager";
 import { PromptManager } from "./PromptManager";
@@ -139,6 +139,40 @@ export class BrowserAgent {
 
   setMaxSteps(n: number): void { this.executionEngine.setMaxSteps(n); }
   setMinMsBetweenCalls(ms: number): void { this.executionEngine.setMinMsBetweenCalls(ms); }
+  setDebugMode(enabled: boolean): void { this.executionEngine.setDebugMode(enabled); }
+  getLastRunStats() { return this.executionEngine.getLastRunStats(); }
+
+  /** One-shot plan generation for long multi-step tasks (Level: single LLM call). */
+  async generatePlan(prompt: string, lang: 'it' | 'en'): Promise<string | null> {
+    try {
+      const system = lang === 'it'
+        ? 'Sei un pianificatore. Dato un compito di automazione browser, produci un piano di 3-6 passi numerati, brevi e concreti. SOLO il piano, nessun altro testo.'
+        : 'You are a planner. Given a browser automation task, produce a numbered plan of 3-6 short, concrete steps. ONLY the plan, no other text.';
+      const stream = this.llmProvider.createMessage(system, [{ role: 'user', content: prompt }], undefined, undefined);
+      let text = '';
+      for await (const chunk of stream) {
+        if (chunk.type === 'text' && chunk.text) text += chunk.text;
+      }
+      text = text.trim();
+      return text.length > 10 && text.length < 2000 ? text : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Auto-inject the top-ranked memories for a domain into the message history
+   * (validated first). Called at task start so the model doesn't need to
+   * remember to invoke lookup_memories itself. Non-blocking on failure.
+   */
+  async injectMemoriesForDomain(domain: string, messages: any[]): Promise<void> {
+    try {
+      if (!(await MemoryManager.isMemoryEnabled())) return;
+      await this.memoryManager.lookupMemories(domain, messages);
+    } catch (error) {
+      console.warn('Memory auto-injection failed (continuing without):', error);
+    }
+  }
 
   /**
    * Check if streaming is supported in the current environment
@@ -238,6 +272,8 @@ export async function createBrowserAgent(
   const agent = new BrowserAgent(page, providerConfig, provider);
   const activeProfile = await configManager.getActiveProfile().catch(() => null);
   agent.setActiveProfile(activeProfile);
+  const maxSteps = await configManager.getMaxSteps().catch(() => DEFAULT_MAX_STEPS);
+  agent.setMaxSteps(maxSteps);
   return agent;
 }
 

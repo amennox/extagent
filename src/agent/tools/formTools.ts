@@ -1,6 +1,6 @@
 import type { Page } from "playwright-crx";
-import { withActivePage } from "./utils";
 import { ToolFactory } from "./types";
+import { withActivePage } from "./utils";
 
 export interface FieldInfo {
   tagName: string;

@@ -1,6 +1,6 @@
 {
-  "name": "InfinitAgent",
-  "version": "0.2.0",
+  "name": "DomMotion",
+  "version": "0.3.0",
   "manifest_version": 3,
   "background": {
     "service_worker": "background.js",
@@ -12,7 +12,7 @@
     "128": "icons/icon128.svg"
   },
   "action": {
-    "default_title": "InfinitAgent",
+    "default_title": "DomMotion",
     "default_icon": {
       "16": "icons/icon16.svg",
       "48": "icons/icon48.svg",
@@ -23,7 +23,7 @@
     "default_path": "sidepanel.html"
   },
   "options_page": "options.html",
-  "permissions": ["debugger", "tabs", "sidePanel", "storage", "activeTab", "commands", "scripting"],
+  "permissions": ["debugger", "tabs", "sidePanel", "storage", "activeTab", "commands", "scripting", "webNavigation", "downloads"],
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -38,7 +38,7 @@
         "default": "Alt+Shift+E",
         "mac": "Alt+Shift+E"
       },
-      "description": "Apri InfinitAgent",
+      "description": "Apri DomMotion",
       "global": false
     }
   }

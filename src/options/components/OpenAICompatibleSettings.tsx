@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { AgentFunction, FunctionMapping, ModelProfile } from '../../models/providers/types';
 import { ConfigManager } from '../../background/configManager';
 import { useLang } from '../../i18n';
-import { Button, Chip, IconButton, Toggle, FloatingInput, LucideIcon } from '../../ui';
+import { AgentFunction, FunctionMapping, ModelProfile } from '../../models/providers/types';
+import { normalizeApiBase } from '../../models/providers/urlUtils';
+import { Button, Chip, IconButton, FloatingInput, LucideIcon, Card, Toggle } from '../../ui';
 import { Section } from './Section';
 
 interface OpenAICompatibleSettingsProps {
@@ -28,21 +29,38 @@ const ROUTABLE_FUNCTIONS: AgentFunction[] = [
   'automation', 'skill', 'recording', 'smartPaste', 'smartExtract', 'observation',
 ];
 
+const MIN_CONTEXT_WINDOW = 64000;
+
 const EMPTY_PROFILE: Omit<ModelProfile, 'id'> = {
   name: '',
   modelId: '',
-  enableThinking: false,
-  thinkingBudget: undefined,
-  contextWindowSize: 32000,
+  reasoningEffort: undefined,
+  extraBody: undefined,
+  contextWindowSize: 256000,
   temperature: 0,
-  maxTokens: 4096,
+  maxTokens: 8192,
 };
+
+const REASONING_EFFORTS = ['minimal', 'low', 'medium', 'high'] as const;
+
+function isValidExtraBody(s?: string): boolean {
+  if (!s || !s.trim()) return true;
+  try {
+    const parsed = JSON.parse(s);
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+  } catch {
+    return false;
+  }
+}
 
 function KVField({ label, value }: { label: string; value: string }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
-      <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.4, fontWeight: 600 }}>{label}</span>
-      <span style={{ fontSize: 12.5, color: 'var(--text)', fontFamily: 'var(--font-mono)' }}>{value}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{
+        fontSize: 9.5, color: 'var(--text-muted)', textTransform: 'uppercase',
+        letterSpacing: 0.5, fontWeight: 700, fontFamily: 'var(--font-mono)',
+      }}>{label}</span>
+      <span style={{ fontSize: 12.5, color: 'var(--text)', fontFamily: 'var(--font-mono)', fontWeight: 500 }}>{value}</span>
     </div>
   );
 }
@@ -53,67 +71,155 @@ interface ProfileEditorProps {
   onDone: () => void;
   onCancel: () => void;
   isNew?: boolean;
+  apiKey: string;
+  baseUrl: string;
+  onResolvedBaseUrl: (url: string) => void;
 }
 
-function ProfileEditorInline({ profile, onChange, onDone, onCancel, isNew }: ProfileEditorProps) {
+function ProfileEditorInline({ profile, onChange, onDone, onCancel, isNew, apiKey, baseUrl, onResolvedBaseUrl }: ProfileEditorProps) {
+  const { t } = useLang();
+  const [modelsState, setModelsState] = useState<{ loading: boolean; error: string; models: { id: string; contextWindow?: number }[] }>({
+    loading: false, error: '', models: [],
+  });
+
+  const handleLoadModels = async () => {
+    if (!baseUrl) { setModelsState({ loading: false, error: t('openai.missingConfig'), models: [] }); return; }
+    setModelsState({ loading: true, error: '', models: [] });
+    const res = await ConfigManager.getInstance().fetchModels(baseUrl, apiKey);
+    if (res.ok && res.models) {
+      if (res.resolvedBaseUrl && res.resolvedBaseUrl !== baseUrl) onResolvedBaseUrl(res.resolvedBaseUrl);
+      setModelsState({ loading: false, error: '', models: res.models });
+    } else {
+      setModelsState({ loading: false, error: res.error ?? 'Errore', models: [] });
+    }
+  };
+
+  const handlePickModel = (id: string) => {
+    if (!id) return;
+    onChange('modelId', id);
+    const found = modelsState.models.find(m => m.id === id);
+    if (found?.contextWindow) onChange('contextWindowSize', found.contextWindow);
+  };
+
   const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '7px 10px', border: '1px solid var(--border)',
-    borderRadius: 6, outline: 'none', background: 'var(--surface)', color: 'var(--text)',
+    width: '100%', padding: '8px 11px', border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-md)', outline: 'none', background: 'var(--surface)', color: 'var(--text)',
     fontFamily: 'inherit', fontSize: 12.5, boxSizing: 'border-box',
   };
   const labelStyle: React.CSSProperties = {
-    fontSize: 10.5, fontWeight: 600, color: 'var(--text-muted)',
-    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4, display: 'block',
+    fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+    textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5, display: 'block', fontFamily: 'var(--font-mono)',
   };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
-          <label style={labelStyle}>Nome profilo</label>
-          <input style={inputStyle} value={profile.name} onChange={e => onChange('name', e.target.value)} placeholder="Es. Fast · GPT-4" />
+          <label style={labelStyle}>{t('openai.profiles.name')}</label>
+          <input style={inputStyle} value={profile.name} onChange={e => onChange('name', e.target.value)} placeholder={t('openai.profiles.namePlaceholderNew')} />
         </div>
         <div>
-          <label style={labelStyle}>Model ID</label>
-          <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={profile.modelId} onChange={e => onChange('modelId', e.target.value)} placeholder="Es. gpt-4o-mini" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
+            <label style={{ ...labelStyle, marginBottom: 0 }}>{t('openai.profiles.modelId')}</label>
+            <button
+              type="button"
+              onClick={handleLoadModels}
+              disabled={modelsState.loading}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4, height: 20, padding: '0 7px',
+                borderRadius: 5, border: '1px solid var(--border)', background: 'var(--surface)',
+                color: 'var(--primary)', cursor: modelsState.loading ? 'default' : 'pointer',
+                fontSize: 10, fontFamily: 'var(--font-mono)', fontWeight: 700,
+              }}
+            >
+              <LucideIcon name={modelsState.loading ? 'Loader' : 'Download'} size={11} />
+              {modelsState.loading ? t('openai.models.loading') : t('openai.models.load')}
+            </button>
+          </div>
+          <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)', fontSize: 12 }} value={profile.modelId} onChange={e => onChange('modelId', e.target.value)} placeholder={t('openai.profiles.modelIdPlaceholder')} />
+          {modelsState.models.length > 0 && (
+            <select
+              style={{ ...inputStyle, cursor: 'pointer', marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 12 }}
+              value={profile.modelId}
+              onChange={e => handlePickModel(e.target.value)}
+            >
+              <option value="">{t('openai.models.choose')}</option>
+              {modelsState.models.map(m => (
+                <option key={m.id} value={m.id}>
+                  {m.id}{m.contextWindow ? ` · ${(m.contextWindow / 1000).toFixed(0)}k` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+          {modelsState.error && (
+            <div style={{ fontSize: 10.5, color: 'var(--error)', marginTop: 4 }}>{modelsState.error}</div>
+          )}
         </div>
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10 }}>
         <div>
-          <label style={labelStyle}>Context window</label>
-          <input style={inputStyle} type="number" value={profile.contextWindowSize ?? ''} onChange={e => onChange('contextWindowSize', Number(e.target.value))} />
+          <label style={labelStyle}>{t('openai.profiles.contextWindow')}</label>
+          <input style={inputStyle} type="number" min={MIN_CONTEXT_WINDOW} step={1000}
+            value={profile.contextWindowSize ?? ''}
+            onChange={e => onChange('contextWindowSize', Number(e.target.value))}
+            onBlur={e => {
+              const v = Number(e.target.value);
+              if (!v || v < MIN_CONTEXT_WINDOW) onChange('contextWindowSize', MIN_CONTEXT_WINDOW);
+            }} />
         </div>
         <div>
-          <label style={labelStyle}>Temperature{profile.enableThinking ? ' (forzata 1)' : ''}</label>
+          <label style={labelStyle}>{t('openai.profiles.temperature')}</label>
           <input style={inputStyle} type="number" step="0.1" min="0" max="2"
-            value={profile.enableThinking ? 1 : (profile.temperature ?? 0)}
-            disabled={profile.enableThinking}
+            value={profile.temperature ?? 0}
             onChange={e => onChange('temperature', Number(e.target.value))} />
         </div>
         <div>
-          <label style={labelStyle}>Max tokens</label>
+          <label style={labelStyle}>{t('openai.profiles.maxTokens')}</label>
           <input style={inputStyle} type="number" value={profile.maxTokens ?? ''} onChange={e => onChange('maxTokens', Number(e.target.value))} />
         </div>
+        <div>
+          <label style={labelStyle}>{t('openai.profiles.reasoning')}</label>
+          <select
+            style={{ ...inputStyle, cursor: 'pointer' }}
+            value={profile.reasoningEffort ?? ''}
+            onChange={e => onChange('reasoningEffort', e.target.value || undefined)}
+          >
+            <option value="">{t('openai.profiles.reasoningOff')}</option>
+            {REASONING_EFFORTS.map(effort => (
+              <option key={effort} value={effort}>{effort}</option>
+            ))}
+          </select>
+        </div>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-        <Toggle
-          checked={profile.enableThinking}
-          onChange={() => onChange('enableThinking', !profile.enableThinking)}
-          label={profile.enableThinking ? '⚡ Thinking ON' : '🚀 Fast mode'}
+      <div style={{ paddingTop: 8, borderTop: '1px solid var(--border)' }}>
+        <label style={labelStyle}>{t('openai.profiles.extraBody')}</label>
+        <textarea
+          style={{
+            ...inputStyle, fontFamily: 'var(--font-mono)', fontSize: 11.5,
+            minHeight: 52, resize: 'vertical',
+            borderColor: isValidExtraBody(profile.extraBody) ? 'var(--border)' : 'var(--error)',
+          }}
+          value={profile.extraBody ?? ''}
+          placeholder={t('openai.profiles.extraBodyPlaceholder')}
+          onChange={e => onChange('extraBody', e.target.value || undefined)}
         />
-        {profile.enableThinking && (
-          <div style={{ flex: 1 }}>
-            <label style={{ ...labelStyle, marginBottom: 2 }}>Budget thinking (token)</label>
-            <input style={{ ...inputStyle, maxWidth: 160 }} type="number" value={profile.thinkingBudget ?? ''}
-              placeholder="es. 8192"
-              onChange={e => onChange('thinkingBudget', e.target.value ? Number(e.target.value) : undefined)} />
-          </div>
-        )}
+        <div style={{ fontSize: 10.5, color: isValidExtraBody(profile.extraBody) ? 'var(--text-muted)' : 'var(--error)', marginTop: 3 }}>
+          {isValidExtraBody(profile.extraBody) ? t('openai.profiles.extraBodyHint') : t('openai.profiles.extraBodyInvalid')}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+          <Toggle
+            checked={profile.nativeToolCalling === true}
+            onChange={() => onChange('nativeToolCalling', !profile.nativeToolCalling)}
+            label={t('openai.profiles.nativeTools')}
+          />
+          <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>{t('openai.profiles.nativeToolsHint')}</span>
+        </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Button variant="ghost" size="sm" onClick={onCancel}>Annulla</Button>
-        <Button size="sm" icon="Save" onClick={onDone} disabled={!profile.name.trim() || !profile.modelId.trim()}>
-          {isNew ? 'Aggiungi' : 'Salva'}
+        <Button variant="ghost" size="sm" onClick={onCancel}>{t('skills.cancel')}</Button>
+        <Button size="sm" icon="Save" onClick={onDone}
+          disabled={!profile.name.trim() || !profile.modelId.trim() || !isValidExtraBody(profile.extraBody)}>
+          {isNew ? t('openai.profiles.add') : t('profile.save')}
         </Button>
       </div>
     </div>
@@ -144,6 +250,8 @@ export function OpenAICompatibleSettings({
   const [showNewForm, setShowNewForm] = useState(false);
   const [newProfile, setNewProfile] = useState<ModelProfile>({ id: '', ...EMPTY_PROFILE });
 
+  const isLocal = /localhost|127\.0\.0\.1/.test(openaiCompatibleBaseUrl);
+
   const handleTestConnection = async () => {
     if (!openaiCompatibleApiKey || !openaiCompatibleBaseUrl) {
       setTestState({ loading: false, ok: false, message: t('openai.missingConfig') });
@@ -156,10 +264,18 @@ export function OpenAICompatibleSettings({
     const result = await ConfigManager.getInstance().testConnection(
       openaiCompatibleBaseUrl, openaiCompatibleApiKey, modelId
     );
+    // Self-heal: if a different candidate (e.g. with /v1) worked, save it.
+    if (result.resolvedBaseUrl && result.resolvedBaseUrl !== openaiCompatibleBaseUrl) {
+      setOpenaiCompatibleBaseUrl(result.resolvedBaseUrl);
+    }
     setTestState({
       loading: false,
       ok: result.ok,
-      message: result.ok ? t('openai.connectionOk') : (result.error ?? t('openai.missingConfig')),
+      message: result.ok
+        ? (result.resolvedBaseUrl && result.resolvedBaseUrl !== openaiCompatibleBaseUrl
+            ? `${t('openai.connectionOk')} · ${result.resolvedBaseUrl}`
+            : t('openai.connectionOk'))
+        : (result.error ?? t('openai.missingConfig')),
     });
   };
 
@@ -203,17 +319,17 @@ export function OpenAICompatibleSettings({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 28, maxWidth: 760 }}>
 
       {/* ── Credenziali ── */}
-      <Section title="Credenziali" description="Compatibili con qualsiasi endpoint OpenAI-compatible.">
-        <div className="ia-card" style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text)', fontWeight: 600, fontSize: 13 }}>
-            <LucideIcon name="KeyRound" size={14} color="var(--primary)" /> OpenAI-compatible
+      <Section title={t('provider.title')} description={t('provider.desc')}>
+        <Card padding={18}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text)', fontWeight: 700, fontSize: 13, marginBottom: 14 }}>
+            <LucideIcon name="KeyRound" size={15} color="var(--primary)" /> {t('provider.openaiCompatible')}
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 12 }}>
             <FloatingInput
-              label="API Key"
+              label={t('openai.apiKey').replace(':', '')}
               value={showKey ? openaiCompatibleApiKey : (openaiCompatibleApiKey ? '••••••••••••••••••••' : '')}
               onChange={(v) => { if (showKey) setOpenaiCompatibleApiKey(v); }}
               icon="KeyRound"
@@ -230,18 +346,24 @@ export function OpenAICompatibleSettings({
               }
             />
             <FloatingInput
-              label="Base URL"
+              label={t('openai.baseUrl').replace(':', '')}
               value={openaiCompatibleBaseUrl}
               onChange={setOpenaiCompatibleBaseUrl}
+              onBlur={() => { if (openaiCompatibleBaseUrl.trim()) setOpenaiCompatibleBaseUrl(normalizeApiBase(openaiCompatibleBaseUrl)); }}
               icon="Link"
               mono
             />
           </div>
-          {/* API Key raw input (hidden — shown only when key not yet set or in show mode) */}
+          <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 6, fontFamily: 'var(--font-mono)' }}>
+            {t('openai.baseUrl.hint')}
+          </div>
           {(!openaiCompatibleApiKey || showKey) && (
-            <div>
-              <label style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 4 }}>
-                {openaiCompatibleApiKey ? 'Modifica API Key' : 'API Key'}
+            <div style={{ marginTop: 12 }}>
+              <label style={{
+                fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
+                textTransform: 'uppercase', letterSpacing: 0.5, display: 'block', marginBottom: 5, fontFamily: 'var(--font-mono)',
+              }}>
+                {openaiCompatibleApiKey ? t('openai.apiKeyEdit') : t('openai.apiKey').replace(':', '')}
               </label>
               <input
                 type="text"
@@ -249,16 +371,16 @@ export function OpenAICompatibleSettings({
                 onChange={e => setOpenaiCompatibleApiKey(e.target.value)}
                 placeholder="sk-…"
                 style={{
-                  width: '100%', padding: '7px 10px', border: '1px solid var(--border)',
-                  borderRadius: 6, outline: 'none', background: 'var(--surface)', color: 'var(--text)',
+                  width: '100%', padding: '8px 11px', border: '1px solid var(--border)',
+                  borderRadius: 'var(--radius-md)', outline: 'none', background: 'var(--surface)', color: 'var(--text)',
                   fontFamily: 'var(--font-mono)', fontSize: 12, boxSizing: 'border-box',
                 }}
               />
             </div>
           )}
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 14 }}>
             <Button variant="outline" icon="Wifi" onClick={handleTestConnection} disabled={testState.loading}>
-              {testState.loading ? 'Verifica…' : t('openai.testConnection')}
+              {testState.loading ? t('openai.testing') : t('openai.testConnection')}
             </Button>
             {testState.ok === true && (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
@@ -273,16 +395,16 @@ export function OpenAICompatibleSettings({
               </span>
             )}
           </div>
-        </div>
+        </Card>
       </Section>
 
       {/* ── Profili modello ── */}
       <Section
-        title="Profili modello"
-        description="Configura più profili e assegnali a funzioni specifiche."
+        title={t('openai.profiles.title')}
+        description={t('openai.profiles.desc')}
         action={
-          <Button icon="Plus" size="sm" variant="outline" onClick={() => { setShowNewForm(true); setEditingProfileId(null); }}>
-            Nuovo profilo
+          <Button icon="Plus" size="sm" onClick={() => { setShowNewForm(true); setEditingProfileId(null); }}>
+            {t('openai.profiles.new')}
           </Button>
         }
       >
@@ -294,23 +416,27 @@ export function OpenAICompatibleSettings({
           )}
 
           {profiles.map(profile => (
-            <div key={profile.id} className="ia-card" style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Card key={profile.id} padding={14} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {editingProfileId === profile.id ? (
                 <ProfileEditorInline
                   profile={profile}
                   onChange={(field, val) => handleEditProfile(profile.id, field, val)}
                   onDone={() => setEditingProfileId(null)}
                   onCancel={() => setEditingProfileId(null)}
+                  apiKey={openaiCompatibleApiKey}
+                  baseUrl={openaiCompatibleBaseUrl}
+                  onResolvedBaseUrl={setOpenaiCompatibleBaseUrl}
                 />
               ) : (
                 <>
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>{profile.name}</span>
-                      {defaultProfileId === profile.id && <Chip size="xs" tone="primarySolid">DEFAULT</Chip>}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>{profile.name}</span>
+                      {defaultProfileId === profile.id && <Chip size="xs" tone="primarySolid">{t('openai.profiles.default')}</Chip>}
+                      {isLocal && <Chip size="xs" tone="success" dot>{t('openai.profiles.local')}</Chip>}
                       <span style={{
                         fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)',
-                        background: 'var(--surface-2)', padding: '2px 7px', borderRadius: 4,
+                        background: 'var(--surface-2)', padding: '2px 7px', borderRadius: 5, fontWeight: 500,
                       }}>{profile.modelId}</span>
                     </div>
                     <div style={{ display: 'flex', gap: 4 }}>
@@ -319,45 +445,41 @@ export function OpenAICompatibleSettings({
                         active={defaultProfileId === profile.id}
                         onClick={() => setDefaultProfileId(profile.id)}
                       />
-                      <IconButton icon="Pencil" size="sm" title="Modifica" onClick={() => { setEditingProfileId(profile.id); setShowNewForm(false); }} />
+                      <IconButton icon="Pencil" size="sm" title={t('skills.edit')} onClick={() => { setEditingProfileId(profile.id); setShowNewForm(false); }} />
                       <IconButton icon="Trash2" size="sm" title={t('openai.profiles.remove')} danger onClick={() => handleRemoveProfile(profile.id)} />
                     </div>
                   </div>
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px 16px', fontSize: 11.5 }}>
-                    <KVField label="Context window"  value={profile.contextWindowSize?.toLocaleString() ?? '—'} />
-                    <KVField label="Max tokens"      value={profile.maxTokens?.toLocaleString() ?? '—'} />
-                    <KVField label="Temperature"     value={profile.enableThinking ? '1 (forced)' : (profile.temperature?.toFixed(1) ?? '—')} />
-                    <KVField label="Thinking budget" value={profile.thinkingBudget?.toLocaleString() ?? '—'} />
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 8, borderTop: '1px solid var(--border)' }}>
-                    <Toggle
-                      checked={profile.enableThinking}
-                      onChange={() => handleEditProfile(profile.id, 'enableThinking', !profile.enableThinking)}
-                      label={profile.enableThinking ? '⚡ Thinking ON' : '🚀 Fast mode'}
-                    />
+                    <KVField label={t('openai.profiles.contextWindow')} value={profile.contextWindowSize?.toLocaleString() ?? '—'} />
+                    <KVField label={t('openai.profiles.maxTokens')}     value={profile.maxTokens?.toLocaleString() ?? '—'} />
+                    <KVField label={t('openai.profiles.temperature')}   value={profile.temperature?.toFixed(1) ?? '—'} />
+                    <KVField label={t('openai.profiles.reasoning')}     value={profile.reasoningEffort ?? t('openai.profiles.reasoningOff')} />
                   </div>
                 </>
               )}
-            </div>
+            </Card>
           ))}
 
           {showNewForm && (
-            <div className="ia-card ia-expand-in" style={{ padding: 14, border: '1.5px dashed var(--border)' }}>
+            <Card className="ia-expand-in" padding={14} style={{ border: '1.5px dashed var(--border)' }}>
               <ProfileEditorInline
                 profile={newProfile}
                 onChange={(field, val) => setNewProfile(p => ({ ...p, [field]: val }))}
                 onDone={handleAddProfile}
                 onCancel={() => { setShowNewForm(false); setNewProfile({ id: '', ...EMPTY_PROFILE }); }}
                 isNew
+                apiKey={openaiCompatibleApiKey}
+                baseUrl={openaiCompatibleBaseUrl}
+                onResolvedBaseUrl={setOpenaiCompatibleBaseUrl}
               />
-            </div>
+            </Card>
           )}
         </div>
       </Section>
 
       {/* ── Function routing ── */}
-      <Section title="Function routing" description={t('openai.routing.desc')}>
-        <div className="ia-card" style={{ overflow: 'hidden' }}>
+      <Section title={t('openai.routing.title')} description={t('openai.routing.desc')}>
+        <Card style={{ overflow: 'hidden' }}>
           {profiles.length === 0 ? (
             <div style={{ padding: '16px 14px', fontSize: 12.5, color: 'var(--text-muted)' }}>
               {t('openai.routing.noProfiles')}
@@ -365,17 +487,17 @@ export function OpenAICompatibleSettings({
           ) : (
             ROUTABLE_FUNCTIONS.map((fn, i) => (
               <div key={fn} style={{
-                display: 'grid', gridTemplateColumns: '160px 1fr 220px',
-                padding: '11px 14px', alignItems: 'center', gap: 12,
+                display: 'grid', gridTemplateColumns: '150px 1fr 220px',
+                padding: '12px 14px', alignItems: 'center', gap: 12,
                 borderBottom: i < ROUTABLE_FUNCTIONS.length - 1 ? '1px solid var(--border)' : 'none',
               }}>
-                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text)' }}>{fn}</span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>{fn}</span>
                 <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{t(`function.${fn}`)}</span>
                 <select
                   value={getMappedProfileId(fn)}
                   onChange={e => handleFunctionMappingChange(fn, e.target.value)}
                   style={{
-                    height: 32, padding: '0 10px', borderRadius: 6,
+                    height: 32, padding: '0 10px', borderRadius: 'var(--radius-md)',
                     background: 'var(--surface)', border: '1px solid var(--border)',
                     fontSize: 12, color: 'var(--text)', cursor: 'pointer',
                     fontFamily: 'inherit', width: '100%', outline: 'none',
@@ -389,7 +511,7 @@ export function OpenAICompatibleSettings({
               </div>
             ))
           )}
-        </div>
+        </Card>
       </Section>
     </div>
   );

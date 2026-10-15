@@ -1,226 +1,183 @@
-# ExtAgent
-*Your in-browser AI assistant. Control the web with natural language.*
+# DomMotion
 
+> Open-source Chrome extension that controls your browser with natural language.
 
-ExtAgent is a privacy-first open source Chrome extension that lets you control your browser using natural language. It combines the power of an LLM for instruction parsing & planning, and Playwright for robust browser automation to accomplish tasks.
+DomMotion is an AI agent that runs directly inside your browser. It connects to any OpenAI-compatible LLM endpoint (OpenAI, Azure, Ollama, vLLM, LM Studio, …) and uses Playwright to perform actions on web pages.
 
-Since ExtAgent runs entirely within your browser (with the exception of the LLM), it can safely interact with logged-in websites, like your social media accounts or email, without compromising security or requiring backend infrastructure. This makes it more convenient for personal use than other "browser use" type products out there.
+This project is an **evolutionary fork of [BrowserBee](https://github.com/parsaghaffari/browserbee)**. DomMotion keeps the spirit and architecture of the original project, with a stronger focus on structured data extraction, B2B automation, and data sovereignty.
 
-## 🎲 Features 
+---
 
-- Supports major LLM providers such as **Anthropic**, **OpenAI**, **Gemini**, and **Ollama** with more coming soon
-- Tracks **token use** and **price** so you know how much you're spending on each task
-- Has access to a wide range of **🕹️ browser tools** (listed below) for interacting and understanding browser state
-- Uses **Playwright** in the background which is a robust browser automation tool
-- The **memory** feature captures useful tool use sequences and stores them locally to make future use more efficient
-- The agent knows when to ask for user's **approval**, e.g. for purchases or posting updates on social media
+## ✨ Features
 
-## 🕹️ Supported tools
+- **Natural-language browser control** — navigate, click, fill forms, extract data.
+- **Structured extraction** — define JSON schemas and let the agent collect data from pages.
+- **Markdown skills** — write reusable automation workflows as `.md` files and run them with a single command.
+- **Local memory** — save successful patterns to IndexedDB and reuse them later.
+- **Explicit approval** — critical actions (submits, deletions, purchases) require your confirmation.
+- **Privacy-first** — data stays in the browser; LLM calls go only to the endpoint you configure.
+- **OpenAI-compatible providers** — use OpenAI, Azure, local servers, Ollama, vLLM, LM Studio, and more.
 
-<details>
-<summary><b>Navigation Tools</b></summary>
+---
 
-- **browser_navigate**
-  - Navigate the browser to a specific URL. Input must be a full URL, e.g. https://example.com
+## 🚀 Installation
 
-- **browser_wait_for_navigation**
-  - Wait until network is idle (Playwright).
+### From source
 
-- **browser_navigate_back**
-  - Go back to the previous page (history.back()). No input.
-
-- **browser_navigate_forward**
-  - Go forward to the next page (history.forward()). No input.
-</details>
-
-<details>
-<summary><b>Tab Context Tools</b></summary>
-
-- **browser_get_active_tab**
-  - Returns information about the currently active tab, including its index, URL, and title.
-
-- **browser_navigate_tab**
-  - Navigate a specific tab to a URL. Input format: 'tabIndex|url' (e.g., '1|https://example.com')
-
-- **browser_screenshot_tab**
-  - Take a screenshot of a specific tab by index. Input format: 'tabIndex[,flags]' (e.g., '1,full')
-</details>
-
-<details>
-<summary><b>Interaction Tools</b></summary>
-
-- **browser_click**
-  - Click an element. Input may be a CSS selector or literal text to match on the page.
-
-- **browser_type**
-  - Type text. Format: selector|text (e.g. input[name="q"]|hello)
-
-- **browser_handle_dialog**
-  - Accept or dismiss the most recent alert/confirm/prompt dialog. Input `accept` or `dismiss`. For prompt dialogs you may append `|text` to supply response text.
-</details>
-
-<details>
-<summary><b>Observation Tools</b></summary>
-
-- **browser_get_title**
-  - Return the current page title.
-
-- **browser_snapshot_dom**
-  - Capture DOM snapshot of the current page with options for selector, clean, structure, and limit.
-
-- **browser_query**
-  - Return up to 10 outerHTML snippets for a CSS selector you provide.
-
-- **browser_accessible_tree**
-  - Return the AX accessibility tree JSON (default: interesting‑only). Input 'all' to dump full tree.
-
-- **browser_read_text**
-  - Return all visible text on the page, concatenated in DOM order.
-
-- **browser_screenshot**
-  - Take a screenshot of the current page with options for full page capture.
-</details>
-
-<details>
-<summary><b>Mouse Tools</b></summary>
-
-- **browser_move_mouse**
-  - Move the mouse cursor to absolute screen coordinates. Input format: `x|y` (example: `250|380`)
-
-- **browser_click_xy**
-  - Left‑click at absolute coordinates. Input format: `x|y` (example: `250|380`)
-
-- **browser_drag**
-  - Drag‑and‑drop with the left button. Input format: `startX|startY|endX|endY` (example: `100|200|300|400`)
-</details>
-
-<details>
-<summary><b>Keyboard Tools</b></summary>
-
-- **browser_press_key**
-  - Press a single key. Input is the key name (e.g. `Enter`, `ArrowLeft`, `a`).
-
-- **browser_keyboard_type**
-  - Type arbitrary text at the current focus location. Input is the literal text to type. Use `\n` for new lines.
-</details>
-
-<details>
-<summary><b>Tab Tools</b></summary>
-
-- **browser_tab_list**
-  - Return a list of open tabs with their indexes and URLs.
-
-- **browser_tab_new**
-  - Open a new tab. Optional input = URL to navigate to (otherwise blank tab).
-
-- **browser_tab_select**
-  - Switch focus to a tab by index. Input = integer index from browser_tab_list.
-
-- **browser_tab_close**
-  - Close a tab. Input = index to close (defaults to current tab if blank).
-</details>
-
-<details>
-<summary><b>Memory Tools</b></summary>
-
-- **save_memory**
-  - Save a memory of how to accomplish a specific task on a website. Use this when you want to remember a useful sequence of actions for future reference.
-
-- **lookup_memories**
-  - Look up stored memories for a specific website domain. Use this as your FIRST step when starting a task on a website to check if there are any saved patterns you can reuse.
-
-- **get_all_memories**
-  - Retrieve all stored memories across all domains. Use this when you want to see all available memories.
-
-- **delete_memory**
-  - Delete a specific memory by its ID. Use this when a memory is no longer useful or accurate.
-
-- **clear_all_memories**
-  - Clear all stored memories. Use this with caution as it will delete all memories across all domains.
-</details>
-
-## ✅ Use Cases
-
-- **Social media butler**: Checks your social media accounts, summarizes notifications and messages, and helps you respond.
-- **News curator**: Gathers and summarizes the latest headlines from your preferred news sources and blogs, giving you a quick, personalized briefing.
-- **Personal assistant**: Helps with everyday tasks like reading and sending emails and messages, booking flights, finding products, and more.
-- **Research assistant**: Assists with deep dives into topics like companies, job listings, market trends, and academic publications by gathering and organizing information.
-- **Knowledge bookmarking & summarization**: Quickly summarizes articles, extracts key information, and saves useful insights for later reference.
-- **Chat with any website**: Ask questions, generate summaries, fill out forms, etc.
-
-## 🛫 Roadmap
-
-Please refer to [ROADMAP.md](ROADMAP.md) for an up to date list of features we're aiming to add to ExtAgent. 
-
-- Support for saving and replaying sessions (macros)
-- Ability to memorize key information as needed (in your local Chrome instance using [IndexedDB](https://developer.chrome.com/docs/devtools/storage/indexeddb))
-- Scheduled task execution (e.g. check news and social media every morning)
-
-If you're interested in contributing to build any of these features or to improve ExtAgent in any way, please head over to [CONTRIBUTING.md](CONTRIBUTING.md). For information about our testing infrastructure and CI/CD pipeline, see [.github/WORKFLOWS.md](.github/WORKFLOWS.md).
-
-## ▶️ Installation
-
-You have three options to install ExtAgent:
-
-### Option 1: Download the latest release (Recommended)
-
-1. Download the latest release from [GitHub Releases](https://github.com/parsaghaffari/ExtAgent/releases/tag/v0.2.0-beta)
-2. Unzip the downloaded file
-3. Load the extension in Chrome:
-   - Go to `chrome://extensions/`
-   - Enable "Developer mode" (toggle in the top-right corner)
-   - Click "Load unpacked" and select the unzipped directory
-   - Set your LLM API key(s) for Anthropic, OpenAI, Gemini, and/or configure Ollama in the options page that pops up
-
-### Option 2: Build from source
-
-1. Clone this repository
-2. Install dependencies with `npm install` or `pnpm install` (this takes ~3 minutes)
-3. Build the extension with `npm run build` or `pnpm build`
+1. Clone the repository.
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+3. Build the extension:
+   ```bash
+   npm run build
+   ```
 4. Load the extension in Chrome:
-   - Go to `chrome://extensions/`
-   - Enable "Developer mode"
-   - Click "Load unpacked" and select the `dist` directory
-   - Set your LLM API key(s) for Anthropic, OpenAI, Gemini, and/or configure Ollama in the options page that pops up
+   - Open `chrome://extensions/`
+   - Enable **Developer mode**
+   - Click **Load unpacked** and select the `dist/` folder
 
-### Option 3: Chrome Web Store
+For hot-reload development, see the scripts in `package.json` and the inline help in the options page.
 
-ExtAgent is now available on [Chrome Web Store](https://chromewebstore.google.com/detail/ExtAgent-%F0%9F%90%9D/ilkklnfjpfoibgokaobmjhmdamogjcfj) 🎉
+---
 
-## 🏃‍♂️ Usage
+## ⚙️ Configuration
 
-1. Click the ExtAgent icon in your Chrome toolbar, or press *Alt+Shift+B*, to open the side panel  
-2. Type your instruction (e.g., *"Go to Google, search for Cicero, and click the first result"*)  
-3. Hit Enter and watch ExtAgent go to work 🐝
+After installation, open the extension options and configure your LLM endpoint:
 
-**Note:** 
-1. Since ExtAgent uses Chrome DevTools Protocol (CDP) to attach to tabs, it's best to leave it attached to a base tab that you leave open throughout your session (ExtAgent can open new tabs if needed). If you close the attached tab, use the ![reattach button](<reattach-button.png>) button to reattach to a new tab.
-2. You can have one instance of ExtAgent running per Chrome window and the instances will be working in isolation from one another.
-3. ExtAgent can't attach to tabs without a URL (e.g. a new tab), or with URLs starting with 'chrome://' or 'chrome-extension://'.
+- **Base URL** (e.g. `http://localhost:8000/v1`)
+- **API Key** (optional for local endpoints)
+- **Model** and preferred profile
 
-## 🫂 Community
+Credentials are saved locally in the browser storage. You can also create multiple model profiles and route different features to different profiles.
 
-Join our Discord community to connect with ExtAgent users and developers:
+---
 
-[![Join our Discord](https://img.shields.io/badge/Discord-Join%20Chat-7289da?logo=discord&logoColor=white&style=for-the-badge)](https://discord.gg/RUaq9bfESj)
+## 🕹️ Usage
 
-## 🫂 Acknowledgements
+1. Open the side panel by clicking the DomMotion icon or pressing `Alt+Shift+E`.
+2. Type what you want to do in natural language (e.g. *“Extract name, VAT number and contact of every supplier on this page”*).
+3. Confirm critical actions when prompted.
+4. Export results as JSON, CSV, or copy them to the clipboard.
 
-ExtAgent is built using these amazing open source projects:
+---
 
-- [Cline](https://github.com/cline/cline) enabled us to vibe-code the first version of ExtAgent and inspired me to build a "Cline for the web"
-- [playwright-crx](https://github.com/ruifigueira/playwright-crx) by [@ruifigueira](https://github.com/ruifigueira) for in-browser use of Playwright
-- [playwright-mcp](https://github.com/microsoft/playwright-mcp) for the browser tool implementations
-- [daisyUI](https://daisyui.com/) 🌼 for the ~~pollen and nectar~~ UI components :)
+## 🧩 Writing DomMotion skills
 
-## 💡 Learnings & what's worth stealing
+Skills are Markdown documents that describe reusable browser-automation workflows. They are stored locally and can be run from the side panel or imported/exported as `.md` files.
 
-1. **Running Playwright in the browser.** Playwright provides a robust and standard interface to LLMs for interacting with modern websites and web apps. Most "browser use" approaches I've come across like [Browser Use](https://github.com/browser-use) and [Playwright MCP](https://github.com/microsoft/playwright-mcp) are primarily designed for controlling a browser remotely in a backend service-browser fashion which is powerful for enterprise automations, whereas [@ruifigueira](https://github.com/ruifigueira) has shown we can neatly wrap Playwright with a browser extension and reduce complexity for end-user use cases.
-2. **"Reflect and learn" memory pattern.** Certain setups are rich in feedback for AI agents. This is one of them, where the agent not only has a broad range of tools available to interact with the environment, but also has powerful observation abilities to understand the impact of its actions on the environment. For example, if the agent is tasked with completing a product purchase, where there is a good chance it's able to brute force its way to the end goal by using different tools (such as mouse and keyboard interactions), it can usually tell whether it has succeeded in the task or not by regularly taking screenshots. There is a valuable learning signal here for the agent and by invoking the agent to encode and memorise these learnings we can enhance future performance and increase efficiency on similar tasks, especially for smaller less capable models. In my limited testing, we can sometimes reduce the number of tokens needed (and therefore cost) for a task by 5x or more if we memorize the optimal tool sequence.
-3. **Interacting with web pages remains a hard task for LLM-powered agents.** DOMs and screenshots are complex, low-information-density modalities that are slow, expensive, and challenging to process for LLMs. Compare a web page to a piece code for instance: each token in a piece of code carries a lot more information on average than a token in an HTML page or pixels in a screenshot. Therefore we need a combination of cleverly simplified representations as well as cheaper/faster models for this type of product to become fully feasible.
-4. **Why use an LLM at all?**. The core value that an LLM agent can provide in this context is in _discovering_ a path or a sequence of actions to accomplish a task which can then be encoded as a set of tool calls, or in fact plain JavaScript (see [Playwright Codegen](https://playwright.dev/docs/codegen)); once a sequence is already known, it's trivial to follow - no LLM needed.
-5. **Privacy-first personal AI tools are the way to go.** There is no doubt that most of us will have some form of an always-on AI servant in the future, and I think the only way we can get there safely is through open source software that interacts transparently with our data and with LLMs. There is a lot of scope for building this type of software, and business models to support it (e.g. offering a hosted version), so I really hope to see and use more robust open source AI assistants.
+### File structure
 
-## 📜 License
+Every skill must start with a YAML frontmatter block delimited by `---`:
 
-[Apache 2.0](LICENSE)
+```markdown
+---
+title: Collect public tenders
+description: Extract title, deadline and CPV code from the public tenders page
+params: [section]
+---
+
+## Steps
+
+1. Navigate to the target portal
+   - `navigate: https://example.com/tenders?section={{section}}`
+
+2. Extract structured data
+   - `extract: {"type":"object","properties":{"title":{"type":"string"},"deadline":{"type":"string"},"cpv":{"type":"string"}}}`
+   - `export: json`
+```
+
+### Frontmatter fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `title` | yes | Unique name of the skill. This is what you type in the side panel to run it. |
+| `description` | yes | Short one-line summary shown in the skill list. |
+| `params` | no | Comma-separated list of parameter names. They can be referenced in commands as `{{paramName}}`. |
+
+### Step commands
+
+Step commands must be wrapped in backticks and follow the pattern `` `command: payload` ``. Lines that do not match a command are collected as free-text notes for the LLM.
+
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `navigate` | Open a URL. | `` `navigate: https://example.com` `` |
+| `extract` | Extract structured data using a JSON schema. | `` `extract: {"type":"object","properties":{"name":{"type":"string"}}}` `` |
+| `paginate` | Collect data across multiple pages. | `` `paginate: {"nextSelector":".next","maxPages":5}` `` |
+| `fill` | Fill a form from a structured payload. | `` `fill: {"email":"user@example.com"}` `` |
+| `play` | Replay a saved recording. | `` `play: login-sequence` `` |
+| `export` | Export collected data. Supported values include `json` and `csv`. | `` `export: csv` `` |
+| `compute` | Run a lightweight data transformation. | `` `compute: normalize` `` |
+
+### Variables and parameters
+
+- **Parameters** are declared in the frontmatter and substituted at runtime. Use them anywhere in the body:
+  ```markdown
+  params: [category, maxResults]
+  ---
+  - `navigate: https://example.com/items?category={{category}}&limit={{maxResults}}`
+  ```
+
+- **Result variables** capture the output of a step and can be referenced later:
+  ```markdown
+  - `extract: {"type":"object","properties":{"total":{"type":"number"}}}` → save as {{summary}}
+  - `compute: {{summary.total}} * 1.22`
+  ```
+
+### Tips for reliable skills
+
+1. **Keep the frontmatter minimal** — only `title`, `description`, and optionally `params`.
+2. **Use one command per bullet** — this makes parsing predictable.
+3. **Add free-text context** between commands; the LLM uses it as a fallback if a step fails.
+4. **Reference exact selectors or URLs** when the portal structure is known.
+5. **Test with a small JSON schema first**, then expand it once extraction works.
+6. **Use parameters for reusable values** (credentials, categories, dates) instead of hard-coding them.
+
+### Running a skill
+
+Open the side panel and type a prompt like:
+
+```text
+Run skill "Collect public tenders" with section "it-services"
+```
+
+DomMotion will match the skill by title, substitute the parameters, and execute the steps in order.
+
+---
+
+## 🛠️ Development
+
+Key scripts:
+
+```bash
+npm run dev        # Build and watch with static copy
+npm run build      # Production build
+npm run lint       # ESLint check
+npm test           # Run unit tests
+```
+
+The extension is built with Vite. React/TypeScript source code lives in `src/`, static assets in `public/`, and build output in `dist/`.
+
+---
+
+## 📄 License
+
+Distributed under the **Apache 2.0** license. See [`LICENSE`](LICENSE).
+
+DomMotion is a fork derived from [BrowserBee](https://github.com/parsaghaffari/browserbee) by Parsa Ghaffari, released under Apache 2.0. Attributions to the original projects and third-party libraries are listed in [`NOTICE`](NOTICE).
+
+---
+
+## 🙏 Acknowledgements
+
+- [BrowserBee](https://github.com/parsaghaffari/browserbee) — original project by Parsa Ghaffari.
+- [playwright-crx](https://github.com/ruifigueira/playwright-crx) — Playwright inside a Chrome extension.
+- [playwright-mcp](https://github.com/microsoft/playwright-mcp) — browser tool implementations.
+- [Cline](https://github.com/cline/cline) — inspiration for the agent-in-the-browser approach.
+- [DaisyUI](https://daisyui.com/) and [Tailwind CSS](https://tailwindcss.com/) — UI.
+- [Lucide](https://lucide.dev/) — icons.
+
+---
+
+*DomMotion is an independent project, not affiliated with BrowserBee or its original maintainers.*

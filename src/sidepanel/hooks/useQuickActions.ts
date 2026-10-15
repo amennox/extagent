@@ -12,23 +12,17 @@ export function useQuickActions({ executePrompt }: UseQuickActionsProps) {
     await executePrompt(prompt);
   };
 
-  const analyzePageForExtraction = async (): Promise<void> => {
-    const prompt =
-      `Analizza la pagina corrente con browser_accessible_tree. ` +
-      `Identifica i dati estraibili (tabelle, liste, record strutturati). ` +
-      `Indica: tipo di dati, colonne/campi rilevati, se c'è paginazione, formato consigliato (JSON o CSV). ` +
-      `Solo analisi, non estrarre ancora.`;
-    await executePrompt(prompt);
-  };
-
   const startSmartExtract = async (hint: string, format: string, paginate: boolean): Promise<void> => {
-    const tool = paginate ? 'paginate_and_collect' : 'extract_with_schema';
+    const input: Record<string, unknown> = { hint, format };
     const prompt =
-      `Estrai i dati dalla pagina usando ${tool}. ` +
-      `Formato richiesto: ${format}.` +
-      (hint ? ` Nota aggiuntiva: ${hint}` : '');
+      `Estrai i dati strutturati dalla pagina corrente usando il tool smart_extract_data.\n` +
+      `Chiama il tool con questo formato esatto:\n` +
+      `<tool>smart_extract_data</tool>\n` +
+      `<input>${JSON.stringify(input)}</input>\n` +
+      `<requires_approval>false</requires_approval>\n` +
+      (paginate ? 'Se la pagina ha paginazione, l\'estrazione deve concentrarsi sulla pagina visibile; per raccogliere più pagine usa in seguito paginate_and_collect.' : '');
     await executePrompt(prompt);
   };
 
-  return { startSmartPaste, analyzePageForExtraction, startSmartExtract };
+  return { startSmartPaste, startSmartExtract };
 }

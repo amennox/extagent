@@ -1,4 +1,5 @@
 import type { Page } from "playwright-crx";
+import { settleAfterAction } from "./stability";
 import { ToolFactory } from "./types";
 import { withActivePage } from "./utils";
 
@@ -12,6 +13,11 @@ export const browserPressKey: ToolFactory = (page: Page) =>
         return await withActivePage(page, async (activePage) => {
           if (!key.trim()) return "Error: key name required";
           await activePage.keyboard.press(key.trim());
+          // Enter often triggers submit/render on SPAs — wait for settle
+          if (/^enter$/i.test(key.trim())) {
+            const settle = await settleAfterAction(activePage);
+            return `Pressed key: ${key.trim()} · ${settle}`;
+          }
           return `Pressed key: ${key.trim()}`;
         });
       } catch (err) {

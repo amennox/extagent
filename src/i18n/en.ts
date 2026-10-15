@@ -1,12 +1,12 @@
 export const en: Record<string, string> = {
-  'app.title': 'InfinitAgent',
+  'app.title': 'DomMotion',
 
   // Side panel
   'sidepanel.tagline': 'What can I do for you today?',
   'sidepanel.placeholder': 'Type a message...',
   'sidepanel.placeholderDisconnected': 'Tab connection lost. Please refresh the tab to continue.',
   'sidepanel.noProvider': 'No LLM provider configured',
-  'sidepanel.noProviderDesc': 'You need to configure an LLM provider before you can use InfinitAgent.',
+  'sidepanel.noProviderDesc': 'You need to configure an LLM provider before you can use DomMotion.',
   'sidepanel.configureProvider': 'Configure Providers',
   'sidepanel.noOutput': 'No output yet',
 
@@ -23,6 +23,9 @@ export const en: Record<string, string> = {
   'tab.connected': 'Connected',
   'tab.disconnected': 'Disconnected',
   'tab.attach': 'Attach to current tab',
+  'tab.switched': 'Switched to tab',
+  'tab.dialog': 'Dialog',
+  'tab.pageError': 'Page error',
 
   // Actions
   'action.stop': 'Cancel',
@@ -41,6 +44,9 @@ export const en: Record<string, string> = {
   'approval.reason': 'Reason:',
   'approval.approve': 'Approve',
   'approval.deny': 'Reject',
+  'approval.approved': 'Approved',
+  'approval.rejected': 'Rejected',
+  'approval.cancelled': 'Cancelled execution — all pending approvals were automatically rejected',
 
   // Token usage
   'token.usage': 'Token Usage:',
@@ -52,6 +58,24 @@ export const en: Record<string, string> = {
 
   // Output
   'output.title': 'Output',
+  'sidepanel.output': 'Output',
+  'sidepanel.history': 'History',
+  'sidepanel.you': 'You',
+  'sidepanel.assistant': 'Assistant',
+  'sidepanel.disclaimer': 'DomMotion can make mistakes. Double-check critical actions.',
+  'sidepanel.localModel': 'local',
+  'sidepanel.newPrompt': 'New prompt',
+  'sidepanel.queued': 'Prompt queued and will run after the current task',
+  'sidepanel.thinking': 'Thinking...',
+  'sidepanel.running': 'Running',
+
+  // Composer
+  'composer.send': 'send',
+  'composer.newline': 'newline',
+
+  // Tool
+  'tool.call': 'call',
+  'tool.input': 'Input',
 
   // Options tabs
   'options.tabs.general': 'General',
@@ -61,10 +85,10 @@ export const en: Record<string, string> = {
 
   // General tab
   'general.gettingStarted': '🚀 Getting Started',
-  'general.steps.intro': 'Follow these simple steps to start using InfinitAgent:',
+  'general.steps.intro': 'Follow these simple steps to start using DomMotion:',
   'general.steps.1.title': '1. Get an API Key',
   'general.steps.1.desc': 'Obtain an API key from your OpenAI-compatible LLM provider:',
-  'general.steps.2.title': '2. Configure InfinitAgent',
+  'general.steps.2.title': '2. Configure DomMotion',
   'general.steps.2.desc': 'Go to the LLM Configuration tab and:',
   'general.steps.2.a': 'Select your preferred provider',
   'general.steps.2.b': 'Enter your API key',
@@ -72,17 +96,17 @@ export const en: Record<string, string> = {
   'general.steps.3.title': '3. Run Your First Task',
   'general.steps.3.desc': 'Try this example to get started:',
   'general.steps.3.a': 'Open a new tab and go to google.com',
-  'general.steps.3.b': 'Click the InfinitAgent icon or press Alt+Shift+E',
+  'general.steps.3.b': 'Click the DomMotion icon or press Alt+Shift+E',
   'general.steps.3.c': '"Search for the weather in Paris"',
-  'general.steps.3.d': 'Press Enter and watch InfinitAgent work!',
+  'general.steps.3.d': 'Press Enter and watch DomMotion work!',
   'general.tips.title': '💡 Pro Tips',
-  'general.tips.1': 'Keep InfinitAgent attached: Leave it connected to a tab throughout your session for best performance',
+  'general.tips.1': 'Keep DomMotion attached: Leave it connected to a tab throughout your session for best performance',
   'general.tips.2': 'Reattach if needed: If you close the attached tab, use the reattach button to reconnect',
-  'general.tips.3': 'One per window: You can run one InfinitAgent instance per Chrome window',
-  'general.tips.4': "Tab limitations: InfinitAgent can't attach to new tabs or chrome:// pages",
+  'general.tips.3': 'One per window: You can run one DomMotion instance per Chrome window',
+  'general.tips.4': "Tab limitations: DomMotion can't attach to new tabs or chrome:// pages",
   'general.needHelp': 'Need Help?',
   'general.joinDiscord': 'Join Discord Community',
-  'general.discordDesc': 'Get help, share tips, and connect with other InfinitAgent users',
+  'general.discordDesc': 'Get help, share tips, and connect with other DomMotion users',
   'general.language': 'Language',
   'general.language.it': 'Italiano',
   'general.language.en': 'English',
@@ -92,6 +116,42 @@ export const en: Record<string, string> = {
   'general.customPrompt.placeholder': 'Paste your custom system prompt here...',
   'general.customPrompt.save': 'Save prompt',
   'general.customPrompt.reset': 'Restore default',
+  'general.tipsDesc': 'Tricks to use the agent more effectively.',
+  'general.tips.count': 'tips for beginners',
+  'general.lines': 'lines',
+  'general.chars': 'chars',
+  'general.saved': 'saved',
+  'general.maxSteps.title': 'Maximum number of steps',
+  'general.maxSteps.desc': 'Maximum number of actions the agent can perform before stopping.',
+  'general.maxSteps.label': 'Max steps',
+  'general.maxSteps.reset': 'Reset to default',
+
+  // Feedback
+  'feedback.question': 'Did the task succeed?',
+  'feedback.good': 'Yes, remember this approach',
+  'feedback.bad': 'No, forget this approach',
+  'feedback.thanks': 'Thanks, memory updated.',
+
+  // Planning
+  'general.planning.title': 'Initial planning',
+  'general.planning.desc': 'For long tasks, generate a 3-6 step plan first and keep it as a reference during execution.',
+  'general.planning.label': 'Enable planning',
+
+  'action.exportLog': "Export session log",
+
+  // Debug mode
+  'general.debug.title': 'Debug mode',
+  'general.debug.desc': 'Total visibility into agent behavior for troubleshooting and corrective action: raw LLM responses, reasoning, outgoing requests and full tool results.',
+  'general.debug.label': 'Enable debug mode',
+  'general.debug.hint': 'Debug details appear in the side panel during execution. Turn off for a clean interface.',
+  'general.debug.on': 'Debug on',
+
+  // Smart panels
+  'smartpaste.title': 'Smart Paste',
+  'smartpaste.hint': '↵ to fill',
+  'smartpaste.fieldsDetected': '{count} fields detected',
+  'smartpaste.pasteData': 'Paste your data above',
+  'smartextract.title': 'Smart Extract',
 
   // Quick actions
   'quickactions.smartPaste': 'Smart Paste',
@@ -105,10 +165,12 @@ export const en: Record<string, string> = {
   'quickactions.format.csv': 'CSV',
   'quickactions.multipage': 'Multi-page',
   'quickactions.proposedFields': 'Detected fields',
+  'quickactions.hintLabel': 'Hint (optional)',
+  'quickactions.hintPlaceholder': 'Describe the data to extract, e.g. titles and prices only',
 
   // About
   'about.title': 'About',
-  'about.desc1': 'InfinitAgent is a Chrome extension that allows you to control your browser using natural language. It uses an OpenAI-compatible LLM backend to interpret your instructions and Playwright to execute them.',
+  'about.desc1': 'DomMotion is a Chrome extension that allows you to control your browser using natural language. It uses an OpenAI-compatible LLM backend to interpret your instructions and Playwright to execute them.',
   'about.desc2': 'To use the extension, click on the extension icon to open the side panel, then enter your instructions in the prompt field and hit Enter.',
 
   // LLM Config
@@ -127,9 +189,13 @@ export const en: Record<string, string> = {
   'openai.apiKeyPlaceholder': 'API key (optional if local endpoint)',
   'openai.baseUrl': 'Base URL:',
   'openai.baseUrlPlaceholder': 'e.g. http://localhost:8000/v1',
+  'openai.baseUrl.hint': 'You can paste the URL with or without /v1 — it is fixed automatically (Test verifies and corrects it).',
   'openai.testConnection': 'Test connection',
   'openai.connectionOk': 'Connection successful',
   'openai.missingConfig': 'Enter API Key and Base URL',
+  'openai.models.load': 'Load',
+  'openai.models.loading': 'Loading…',
+  'openai.models.choose': '— choose a model —',
 
   // Profiles
   'openai.profiles.title': 'Model Profiles',
@@ -153,7 +219,19 @@ export const en: Record<string, string> = {
   'openai.profiles.modelId': 'Model ID',
   'openai.profiles.modelIdPlaceholder': 'e.g. qwen3-35b',
   'openai.profiles.enableThinkingShort': 'Enable thinking',
+  'openai.profiles.reasoning': 'Reasoning',
+  'openai.profiles.reasoningOff': 'Off',
+  'openai.profiles.extraBody': 'Extra body (JSON)',
+  'openai.profiles.extraBodyPlaceholder': 'e.g. {"chat_template_kwargs": {"enable_thinking": false}}',
+  'openai.profiles.extraBodyHint': 'Extra params merged into the request body, for non-standard endpoints. Leave empty if not needed.',
+  'openai.profiles.extraBodyInvalid': 'Invalid JSON: must be an object, e.g. {"key": "value"}',
+  "openai.profiles.nativeTools": "Native function calling",
+  "openai.profiles.nativeToolsHint": "Also send native tool schemas (normally OFF: the protocol is the one in the prompt).",
   'openai.profiles.add': 'Add profile',
+  'openai.profiles.desc': 'Configure multiple model profiles and assign them to specific functions.',
+  'openai.profiles.local': 'local',
+  'openai.apiKeyEdit': 'Edit API Key',
+  'openai.testing': 'Testing…',
 
   // Routing
   'openai.routing.title': 'Function routing',
@@ -174,7 +252,7 @@ export const en: Record<string, string> = {
 
   // Memory
   'memory.title': 'Memory Management',
-  'memory.desc': 'InfinitAgent stores memories of successful interactions with websites to help improve future interactions. You can export these memories for backup or transfer to another device, and import them back later.',
+  'memory.desc': 'DomMotion stores memories of successful interactions with websites to help improve future interactions. You can export these memories for backup or transfer to another device, and import them back later.',
   'memory.current': 'Current memories:',
   'memory.export': 'Export Memories',
   'memory.import': 'Import Memories',
@@ -225,6 +303,36 @@ export const en: Record<string, string> = {
   'recording.export': 'Export JSON',
   'recording.delete': 'Delete',
   'recording.import': 'Import JSON',
+  'recording.title': 'Automate',
+  'recording.startRec': 'Start REC',
+  'recording.stopRec': 'Stop',
+  'recording.saved': 'Saved recordings',
+  'recording.createSkill': 'Create skill',
+
+  // Skill wizard (recorder → skill.md)
+  'wizard.title': 'Create skill from recording',
+  'wizard.analyzing': 'AI analysis in progress…',
+  'wizard.skillName': 'Skill name',
+  'wizard.skillDescription': 'Description',
+  'wizard.variables': 'Recorded values — what should change on each run?',
+  'wizard.recordedValue': 'recorded value',
+  'wizard.choice.fixed': 'Fixed (always this value)',
+  'wizard.choice.param': 'Variable — asked at start',
+  'wizard.choice.expression': 'Expression (e.g. current date)',
+  'wizard.choice.ai': 'Computed by AI',
+  'wizard.paramName': 'param_name',
+  'wizard.aiInstructionPlaceholder': 'Instruction for the AI, e.g. "take the order number extracted in the previous step"',
+  'wizard.notes': 'Operator notes (optional)',
+  'wizard.notesPlaceholder': 'e.g. "If the cookie popup appears, close it and continue"',
+  'wizard.create': 'Create skill',
+  'wizard.creating': 'Creating…',
+  'wizard.cancel': 'Cancel',
+  'wizard.created': 'Skill created',
+  'wizard.expr.today': 'Current date (DD/MM/YYYY)',
+  'wizard.expr.todayIso': 'Current date (YYYY-MM-DD)',
+  'wizard.expr.todayPlus7': 'Today + 7 days',
+  'wizard.expr.todayMinus1': 'Yesterday',
+  'wizard.expr.now': 'Current time (HH:MM)',
 
   // Output & export
   'output.copyJson': 'Copy JSON',
@@ -235,10 +343,17 @@ export const en: Record<string, string> = {
   // Task history
   'history.title': 'History',
   'history.rerun': 'Rerun',
+  'history.empty': 'No history yet.',
 
   // Domain profiles
   'options.tabs.profiles': 'Domain Profiles',
   'options.tabs.help': 'Help & Docs',
+  'options.subtitles.general': 'Basic behavior, language and system prompt.',
+  'options.subtitles.providers': 'API key, model profiles and per-function routing.',
+  'options.subtitles.memory': 'What the agent remembers across sessions.',
+  'options.subtitles.skills': 'Reusable Markdown workflows.',
+  'options.subtitles.profiles': 'Site-specific behavior and selectors.',
+  'options.subtitles.help': 'Guides, examples and tool reference.',
   'profile.title': 'Domain Profiles',
   'profile.desc': 'Domain profiles enrich the system prompt and provide hints for specific web portals.',
   'profile.new': 'New profile',
@@ -266,6 +381,11 @@ export const en: Record<string, string> = {
   'error.tabReloaded': 'The attached tab was reloaded.',
   'error.cdpDisconnected': 'Browser connection lost. Please reattach the tab.',
   'error.restrictedPage': 'This page cannot be accessed by the extension.',
+  'error.rateLimit': '⚠️ Rate limit reached. Retrying automatically…',
+  'error.apiKeyMissing': 'Error: LLM configuration missing. Open settings and configure endpoint and API key.',
+  'agent.cancelledByUser': 'Execution cancelled by user.',
+  'agent.stepRetry': '⚠️ LLM error at step {step}, retrying ({attempt}/{max})…',
+  'memory.noHtml': 'Memory must not contain page HTML',
 
   // Save
   'save.saving': 'Saving...',

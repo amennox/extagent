@@ -1,6 +1,7 @@
 import { ExecutionCallbacks } from '../agent/ExecutionEngine';
 import { normalizeDomain } from '../tracking/domainUtils';
 import { MemoryService, AgentMemory } from '../tracking/memoryService';
+import { consumePendingRecordingName } from '../tracking/actionLog';
 import { executePrompt } from './agentController';
 import { getTabState, getWindowForTab, getAgentForWindow } from './tabManager';
 import { logWithTimestamp, handleError, sendUIMessage } from './utils';
@@ -193,6 +194,10 @@ async function processReflectionOutput(output: string, domain: string, tabId: nu
       const memoryService = MemoryService.getInstance();
       await memoryService.init();
       
+      // If the task produced a replayable auto-recording, link it to the first
+      // memory so a validated memory can be replayed deterministically.
+      const linkedRecordingName = consumePendingRecordingName();
+
       // Save each memory
       const savedIds: number[] = [];
       for (const memory of memories) {
@@ -204,7 +209,11 @@ async function processReflectionOutput(output: string, domain: string, tabId: nu
         
         // Normalize the domain of the memory
         memory.domain = normalizeDomain(memory.domain);
-        
+
+        if (linkedRecordingName && savedIds.length === 0) {
+          memory.recordingName = linkedRecordingName;
+        }
+
         // Save the memory
         try {
           const id = await memoryService.storeMemory(memory);

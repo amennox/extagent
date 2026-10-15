@@ -66,14 +66,18 @@ export function lookupMemories(page: Page) {
           return `No memories found for domain: ${domain}`;
         }
 
-        // Sort memories by creation date (newest first)
-        memories.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        // NOTE: the service returns memories already ranked
+        // (validated first, then by useCount, then most recent) — keep that order.
 
         // Format the memories in a more concise way
         const formattedMemories = memories.map(memory => ({
           domain: memory.domain,
           taskDescription: memory.taskDescription,
           toolSequence: memory.toolSequence,
+          validated: memory.validated ?? false,
+          // If present, the memory is deterministically replayable:
+          // call play_automation with this recordingName instead of redoing steps manually
+          recordingName: memory.recordingName,
           createdAt: memory.createdAt ? new Date(memory.createdAt).toISOString() : 'unknown'
         }));
 

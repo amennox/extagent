@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useLang } from '../../i18n';
 import { LucideIcon } from '../../ui';
 
 interface PromptFormProps {
@@ -14,12 +15,13 @@ export const PromptForm: React.FC<PromptFormProps> = ({
   isProcessing,
   tabStatus,
 }) => {
+  const { t } = useLang();
   const [prompt, setPrompt] = useState('');
   const isDetached = tabStatus === 'detached';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || isProcessing || isDetached) return;
+    if (!prompt.trim() || isDetached) return;
     onSubmit(prompt);
     setPrompt('');
   };
@@ -32,16 +34,19 @@ export const PromptForm: React.FC<PromptFormProps> = ({
   };
 
   return (
-    <div style={{ padding: '6px 14px 14px', flex: '0 0 auto', background: 'var(--bg)' }}>
+    <div style={{ padding: '0 14px 14px', flex: '0 0 auto' }}>
       <form onSubmit={handleSubmit}>
-        <div className="ia-card" style={{ boxShadow: 'var(--shadow-card)', padding: 8, borderRadius: 12 }}>
+        <div style={{
+          background: 'var(--surface)', border: '1px solid var(--border)',
+          borderRadius: 'var(--radius-xl)', boxShadow: 'var(--shadow-card)', padding: 10,
+        }}>
           <textarea
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isDetached ? 'Tab disconnesso — clicca Refresh' : 'Chiedi a InfinitAgent…'}
+            placeholder={isDetached ? t('sidepanel.placeholderDisconnected') : t('sidepanel.placeholder')}
             autoFocus
-            disabled={isProcessing || isDetached}
+            disabled={isDetached}
             rows={2}
             style={{
               width: '100%', minHeight: 38, maxHeight: 160, resize: 'none',
@@ -50,26 +55,25 @@ export const PromptForm: React.FC<PromptFormProps> = ({
               lineHeight: 1.5, boxSizing: 'border-box',
             }}
           />
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '2px 4px 0' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '4px 2px 0' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-muted)', fontSize: 10.5 }}>
-              <span className="ia-kbd">↵</span><span>send</span>
+              <span className="ia-kbd">↵</span><span>{t('composer.send')}</span>
               <span style={{ opacity: 0.4 }}>·</span>
-              <span className="ia-kbd">⇧↵</span><span>newline</span>
+              <span className="ia-kbd">⇧↵</span><span>{t('composer.newline')}</span>
             </div>
             <button
               type={isProcessing ? 'button' : 'submit'}
               onClick={isProcessing ? onCancel : undefined}
-              title={isProcessing ? 'Cancel' : 'Send'}
+              title={isProcessing ? t('action.stop') : t('action.send')}
               style={{
-                width: 32, height: 32, borderRadius: 999, border: 0, cursor: 'pointer',
-                background: isProcessing ? 'var(--error)' : 'var(--primary)',
+                width: 34, height: 34, borderRadius: 999, border: 0, cursor: 'pointer',
+                background: isProcessing ? 'var(--accent)' : 'var(--primary)',
                 color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                 transition: 'background .15s, transform .15s',
-                transform: isProcessing ? 'rotate(90deg)' : 'rotate(0)',
                 opacity: (!prompt.trim() && !isProcessing) ? 0.5 : 1,
               }}
             >
-              <LucideIcon name={isProcessing ? 'X' : 'SendHorizontal'} size={15} strokeWidth={2} />
+              <LucideIcon name={isProcessing ? 'Square' : 'SendHorizontal'} size={16} strokeWidth={2} />
             </button>
           </div>
         </div>
@@ -84,6 +88,7 @@ interface ChipInfo {
 }
 
 function ProviderChipInline() {
+  const { t } = useLang();
   const [info, setInfo] = useState<ChipInfo | null>(null);
 
   const loadInfo = React.useCallback(() => {
@@ -107,27 +112,31 @@ function ProviderChipInline() {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, gap: 6 }}>
       <span style={{
-        display: 'inline-flex', alignItems: 'center', gap: 6, height: 22,
-        padding: '0 10px', borderRadius: 999, background: 'var(--surface-2)',
-        border: '1px solid var(--border)', fontSize: 10.5, color: 'var(--text-muted)',
+        display: 'inline-flex', alignItems: 'center', gap: 6, height: 24,
+        padding: '0 10px', borderRadius: 999, background: 'var(--surface)',
+        border: '1px solid var(--border)', fontSize: 11, color: 'var(--text-muted)',
         fontFamily: 'var(--font-mono)', minWidth: 0, overflow: 'hidden',
       }}>
         <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--success)', flexShrink: 0 }} />
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--primary)', fontWeight: 600 }}>{info.profileName}</span>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--primary)', fontWeight: 700 }}>
+          {info.profileName}
+        </span>
+        <span style={{ opacity: 0.6 }}>·</span>
+        <span>{t('sidepanel.localModel')}</span>
       </span>
       <button
         onClick={() => chrome.runtime.openOptionsPage()}
-        title="Impostazioni"
+        title={t('action.settings')}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 22, height: 22, borderRadius: 6, border: '1px solid var(--border)',
+          width: 24, height: 24, borderRadius: 8, border: '1px solid var(--border)',
           background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer',
           flexShrink: 0, padding: 0,
         }}
         onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--text)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border-strong)'; }}
         onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--text-muted)'; (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)'; }}
       >
-        <LucideIcon name="Settings" size={12} />
+        <LucideIcon name="Settings" size={13} />
       </button>
     </div>
   );

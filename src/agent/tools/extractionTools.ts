@@ -1,5 +1,5 @@
-import type { Page } from "playwright-crx";
 import Ajv from 'ajv';
+import type { Page } from "playwright-crx";
 import TurndownService from 'turndown';
 import { LLMProvider, ApiStream } from "../../models/providers/types";
 import { withActivePage } from "./utils";
@@ -107,7 +107,13 @@ export function extractWithSchema(page: Page, llmProvider: LLMProvider) {
             messages.push({ role: 'user', content: `The JSON you returned is not valid: ${lastError}. Return ONLY the corrected JSON, no explanations.` });
           }
 
-          const stream = llmProvider.createMessage(systemPrompt, messages, [], undefined);
+          // First attempt uses the standard response_format JSON mode (fewer
+          // AJV retries when the endpoint supports it); retries fall back to
+          // prompt-forced JSON for endpoints that reject the parameter.
+          const overrides = attempt === 0
+            ? { response_format: { type: 'json_object' } }
+            : undefined;
+          const stream = llmProvider.createMessage(systemPrompt, messages, [], undefined, overrides);
           const raw = (await consumeStream(stream)).trim();
 
           // Strip markdown code fence if model wrapped the output
