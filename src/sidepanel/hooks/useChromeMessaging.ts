@@ -62,7 +62,9 @@ export const useChromeMessaging = ({
       // If the message has a tabId, check if it matches this tab's ID
       // If the message has a windowId, check if it matches this window's ID
       // If the message doesn't have a tabId or windowId, process it (for backward compatibility)
-      if ((message.tabId && message.tabId !== tabId) ||
+      // Approvals are scoped to the window: the agent may work in another tab of it
+      const windowScoped = message.action === 'requestApproval' && !!message.windowId;
+      if ((message.tabId && message.tabId !== tabId && !windowScoped) ||
           (message.windowId && windowId && message.windowId !== windowId)) {
         return false; // Skip messages for other tabs or windows
       }

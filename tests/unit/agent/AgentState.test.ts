@@ -1,4 +1,5 @@
 import {
+  resultKey,
   buildStateMessage, classifyResult, hasMalformedXmlCall, LoopDetector, parseXmlToolCalls, renderMessages, stripXmlCalls, Transcript,
 } from '../../../src/agent/AgentState';
 
@@ -97,5 +98,23 @@ describe('AgentState', () => {
     expect(s).toContain('⚠ careful');
     expect(s).toContain('No up-to-date screenshot');
     expect(s).toContain('Only 2 steps left');
+  });
+
+  it('never renders an empty assistant message for an empty native turn', () => {
+    const t = new Transcript();
+    t.addTurn({ text: '', protocol: 'native', calls: [], results: [], feedback: 'FEEDBACK' });
+    t.addTurn({ text: 'ok', protocol: 'native', calls: [], results: [] });
+    const msgs = renderMessages(t, { history: [], task: 'T', state: 'S', lang: 'en' });
+    expect(msgs.every(m => m.role !== 'assistant' || m.content || m.tool_calls?.length)).toBe(true);
+    expect(msgs.map(m => m.content)).toEqual(['T', 'FEEDBACK', 'ok', 'S']);
+  });
+
+  it('does not count repeated calls as a loop when the result keeps changing', () => {
+    const d = new LoopDetector();
+    for (let i = 0; i < 8; i++) {
+      d.record({ signature: 'scroll:down', resultKey: resultKey(`Scrolled down\n[${i}] link "Ordine ${i}"`), name: 'browser_scroll', isError: false, noChange: false, mutating: true, observation: true });
+    }
+    expect(d.status('en')).toEqual({});
+    expect(resultKey('Clicked · stable after 120ms')).toBe(resultKey('Clicked · stable after 480ms'));
   });
 });

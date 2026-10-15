@@ -6,7 +6,7 @@ import { ProcedureStore } from "../../procedures/store";
 import { requestApproval } from "../approvalManager";
 import { extractWithSchema } from "./extractionTools";
 import { observePage } from "./pageMapTools";
-import { ToolOutput, toolResultText } from "./types";
+import { ToolExecutionContext, ToolOutput, toolResultText } from "./types";
 import { getCurrentTabId, withActivePage } from "./utils";
 
 /**
@@ -19,7 +19,7 @@ export function runProcedure(page: Page, llmProvider?: LLMProvider) {
   return {
     name: 'run_procedure',
     description: 'Run a saved procedure. Input: JSON {name, params?, startAt?}.',
-    func: async (input: string): Promise<string | ToolOutput> => {
+    func: async (input: string, context?: ToolExecutionContext): Promise<string | ToolOutput> => {
       let args: { name?: string; params?: Record<string, unknown>; startAt?: number };
       try {
         args = JSON.parse(input || '{}');
@@ -45,6 +45,7 @@ export function runProcedure(page: Page, llmProvider?: LLMProvider) {
           params,
           startAt: args.startAt ? Math.max(0, Number(args.startAt) - 1) : 0,
           approvalMode,
+          isCancelled: context?.isCancelled,
           onApproval: async (step, reason) => {
             const tabId = (await getCurrentTabId(activePage)) ?? 0;
             return requestApproval(tabId, 'run_procedure', `${proc.name}: ${step.description}`, reason);

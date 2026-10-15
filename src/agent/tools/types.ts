@@ -17,6 +17,8 @@ export interface BrowserTool {
 export interface ToolExecutionContext {
   requiresApproval?: boolean;
   approvalReason?: string;
+  /** True once the task was stopped or the tool timed out (long tools check it between steps) */
+  isCancelled?: () => boolean;
 }
 
 export type ToolFactory = (page: Page) => BrowserTool;

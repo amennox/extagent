@@ -81,7 +81,7 @@ export async function requestApproval(
     chrome.runtime.sendMessage({
       action: 'requestApproval',
       tabId,
-      windowId, // Include window ID in the message
+      windowId, // the side panel of this window shows it even if the agent moved to another tab
       requestId,
       toolName,
       toolInput,
@@ -96,6 +96,16 @@ export async function requestApproval(
       // Don't resolve here - wait for the handleApprovalResponse call
     });
   });
+}
+
+/** Reject every pending approval (Stop button): the agent must not stay blocked. */
+export function cancelPendingApprovals(): number {
+  const n = pendingApprovals.size;
+  for (const [id, pending] of [...pendingApprovals]) {
+    pendingApprovals.delete(id);
+    pending.resolve(false);
+  }
+  return n;
 }
 
 /**

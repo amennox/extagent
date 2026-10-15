@@ -78,6 +78,12 @@ function roleFor(role?: string): string | undefined {
   return VALID_ROLES.has(role) ? role : undefined;
 }
 
+/** The step value references a secret parameter: never send it to the LLM. */
+function usesSecret(proc: Procedure, step: ProcedureStep): boolean {
+  const secrets = proc.params.filter(p => p.type === 'secret').map(p => p.name);
+  return secrets.some(name => new RegExp(`\\{\\{\\s*${name}\\s*\\}\\}`).test(`${step.value ?? ''} ${step.instruction ?? ''}`));
+}
+
 export function missingParams(proc: Procedure, params: Record<string, string>): string[] {
   return proc.params
     .filter(p => p.required && !(params[p.name] ?? p.default ?? '').toString().trim())
@@ -153,6 +159,11 @@ export class ProcedureRunner {
     }
     for (const [k, v] of Object.entries(opts.params ?? {})) params[k] = String(v);
     const ctx: ReplayContext = createReplayContext(params);
+    const secretNames = new Set(proc.params.filter(p => p.type === 'secret').map(p => p.name));
+    const maskedCtx: ReplayContext = {
+      params: Object.fromEntries(Object.entries(params).map(([k, v]) => [k, secretNames.has(k) ? `[${k}: valore segreto non disponibile]` : v])),
+      variables: ctx.variables,
+    };
     const log: string[] = [];
     const total = proc.steps.length;
     const start = Math.max(0, opts.startAt ?? 0);
@@ -174,7 +185,8 @@ export class ProcedureRunner {
       emit('running');
 
       const value = step.value !== undefined ? resolveExpressions(step.value, ctx).resolved : undefined;
-      const instruction = step.instruction ? resolveExpressions(step.instruction, ctx).resolved : '';
+      // Instructions go to the LLM: secret parameters are never interpolated
+      const instruction = step.instruction ? resolveExpressions(step.instruction, maskedCtx).resolved : '';
 
       // Approval
       const reason = this.approvalFor(step, opts.approvalMode ?? 'risky');
@@ -224,7 +236,7 @@ export class ProcedureRunner {
           emit('agent', message);
           const res = await opts.aiResolver({
             procedure: proc, index: i, step, failure: message, variables: ctx.variables,
-            instruction: instruction || `${step.description}${value ? ` (valore: ${value})` : ''}`,
+            instruction: instruction || `${step.description}${value ? ` (valore: ${usesSecret(proc, step) ? '[valore segreto: chiedilo all\'utente, non è disponibile]' : value})` : ''}`,
           });
           if (res.ok) {
             emit('ok', 'completed by the agent');

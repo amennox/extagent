@@ -110,7 +110,7 @@ describe('ExecutionEngine', () => {
     const { engine, provider, tools, cb } = setup(({ n }) =>
       n === 1 ? [call('browser_click_ref', { ref: 2 }), call('browser_read_text')] : [text('Non ho eliminato nulla.')]);
     const result = await engine.executePrompt('Pulisci', cb, [], true);
-    expect(requestApproval).toHaveBeenCalledWith(expect.any(Number), 'browser_click_ref', expect.any(String), expect.stringContaining('Elimina tutto'));
+    expect(requestApproval).toHaveBeenCalledWith(expect.any(Number), 'browser_click_ref', expect.any(String), expect.stringContaining('Elimina tutto'), undefined);
     expect(tools.find(t => t.name === 'browser_click_ref')!.func).not.toHaveBeenCalled();
     expect(tools.find(t => t.name === 'browser_read_text')!.func).not.toHaveBeenCalled();
     const results = provider.requests[1].messages.filter(m => m.role === 'tool').map(m => m.content as string);
@@ -249,5 +249,37 @@ describe('ExecutionEngine', () => {
     expect(msgs.map(m => m.content)).toEqual(expect.arrayContaining(['vecchio', 'risposta']));
     expect(JSON.stringify(msgs)).not.toContain('<tool>');
     expect(msgs.find(m => typeof m.content === 'string' && m.content.startsWith('nuovo'))!.content).toContain('Crea fornitore');
+  });
+
+  it('aborts an in-flight LLM request when the task is stopped', async () => {
+    const errorHandler = new ErrorHandler();
+    let aborted = false;
+    const provider: LLMProvider = {
+      async *createMessage(_s: string, _m: any[], _t?: any[], _p?: any, _o?: any, signal?: AbortSignal) {
+        await new Promise<void>(resolve => signal?.addEventListener('abort', () => { aborted = true; resolve(); }));
+        yield { type: 'error', error: { message: 'Request was aborted.' } } as StreamChunk;
+      },
+      getModel: () => ({ id: 'm', info: { name: 'm', inputPrice: 0, outputPrice: 0 } }),
+      getDefaultProfile: () => null,
+    };
+    const page: any = { url: () => 'https://a.it', title: async () => 'A', context: () => ({ pages: () => [1] }) };
+    setCurrentPage(page);
+    const tools = fakeTools();
+    const engine = new ExecutionEngine(provider, new ToolManager(page, tools), new PromptManager(tools), new MemoryManager(), errorHandler);
+    engine.setMinMsBetweenCalls(0);
+    const run = engine.executePrompt('x', { onLlmOutput: () => undefined, onToolOutput: () => undefined, onComplete: () => undefined }, [], true);
+    await new Promise(r => setTimeout(r, 20));
+    errorHandler.cancel();
+    const result = await run;
+    expect(aborted).toBe(true);
+    expect(result.outcome).toBe('cancelled');
+  });
+
+  it('does not undo a Stop pressed before the run started', async () => {
+    const { engine, provider, cb } = setup(() => [call('browser_read_text')]);
+    (engine as any).errorHandler.cancel();
+    const result = await engine.executePrompt('x', cb, [], true);
+    expect(result.outcome).toBe('cancelled');
+    expect(provider.requests).toHaveLength(0);
   });
 });

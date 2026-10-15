@@ -68,15 +68,13 @@ export function stripThinkTags(text: string): string {
 
 export function isContextOverflowError(error: unknown): boolean {
   const e = error as any;
-  const msg = (e?.message ?? '').toLowerCase();
+  const msg = `${e?.message ?? ''} ${e?.code ?? ''} ${e?.error?.code ?? ''} ${e?.error?.message ?? ''}`.toLowerCase();
   const status = e?.status ?? e?.statusCode ?? 0;
-  if (status === 413 || status === 422) return true;
-  if (status === 500 && (
-    msg.includes('context_length') || msg.includes('too many tokens') ||
-    msg.includes('maximum context') || msg.includes('request too large') ||
-    msg.includes('token limit')
-  )) return true;
-  return false;
+  if (status === 413) return true;
+  if (![400, 422, 500].includes(status)) return false;
+  // OpenAI: context_length_exceeded · vLLM: "maximum context length is" ·
+  // llama.cpp: exceed_context_size_error · others: "too many tokens", "token limit"
+  return /context[_ ]length|maximum context|context size|exceed(s|ed)?[_ ]?(the )?context|context window|too many tokens|token limit|request too large|prompt is too long/.test(msg);
 }
 
 /** The endpoint rejected the `tools`/`tool_choice` parameters. */
@@ -123,6 +121,9 @@ export class OpenAICompatibleProvider implements LLMProvider {
       baseURL: baseUrl,
       dangerouslyAllowBrowser: true,
       timeout: 600_000, // 600s — needed for slow local LLMs
+      // The agent engine retries failed steps itself: SDK retries would
+      // multiply the wait (up to 3 × 600s) and ignore the Stop button.
+      maxRetries: 0,
     });
   }
 
@@ -155,7 +156,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
     messages: any[],
     tools?: any[],
     profile?: ModelProfile,
-    requestOverrides?: Record<string, unknown>
+    requestOverrides?: Record<string, unknown>,
+    signal?: AbortSignal
   ): ApiStream {
     const activeProfile = profile ?? this.getDefaultProfile();
 
@@ -234,7 +236,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
     }
 
     try {
-      const stream = await this.client.chat.completions.create(requestBody) as unknown as AsyncIterable<any>;
+      const stream = await this.client.chat.completions.create(requestBody, signal ? { signal } : undefined) as unknown as AsyncIterable<any>;
       const accumulatedToolCalls: any[] = [];
       // Dual-mode reasoning handling (silent): dedicated reasoning_content
       // field AND inline <think> tags in content are both filtered out of the
@@ -260,19 +262,30 @@ export class OpenAICompatibleProvider implements LLMProvider {
         if (delta?.tool_calls) {
           console.log("🔍 LLM tool calls:", delta.tool_calls);
           for (const toolCall of delta.tool_calls) {
-            const existingIndex = accumulatedToolCalls.findIndex(tc => tc.index === toolCall.index);
-            if (existingIndex >= 0) {
+            // Merge deltas by index; gateways that omit `index` start a new
+            // call with a new non-empty id.
+            let existing = toolCall.index !== undefined
+              ? accumulatedToolCalls.find(tc => tc.index === toolCall.index)
+              : undefined;
+            if (toolCall.index === undefined) {
+              const last = accumulatedToolCalls[accumulatedToolCalls.length - 1];
+              existing = toolCall.id && toolCall.id !== last?.id ? undefined : last;
+            }
+            if (existing) {
               if (toolCall.function) {
-                const existingFn = accumulatedToolCalls[existingIndex].function || {};
-                accumulatedToolCalls[existingIndex].function = {
+                const existingFn = existing.function || {};
+                existing.function = {
                   ...existingFn,
-                  ...toolCall.function,
                   name: toolCall.function.name || existingFn.name || '',
                   arguments: (existingFn.arguments || '') + (toolCall.function.arguments || ''),
                 };
               }
+              if (toolCall.id && !existing.id) existing.id = toolCall.id;
             } else {
-              accumulatedToolCalls.push(toolCall);
+              accumulatedToolCalls.push({
+                ...toolCall,
+                function: { name: toolCall.function?.name || '', arguments: toolCall.function?.arguments || '' },
+              });
             }
           }
         }

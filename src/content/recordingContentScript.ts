@@ -161,9 +161,14 @@ declare global {
     el instanceof HTMLTextAreaElement ||
     (el as HTMLElement).isContentEditable;
 
+  let lastEnterAt = 0;
+
   function onClick(e: MouseEvent): void {
     const el = realTarget(e);
     if (!el || banner?.contains(el)) return;
+    // Enter triggers an implicit click on the submit button (detail = 0):
+    // the press step already covers it, recording both would submit twice
+    if (e.detail === 0 && Date.now() - lastEnterAt < 500) return;
     // Captured by the change handler instead
     if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio')) return;
     if (el instanceof HTMLSelectElement || isTextField(el)) return;
@@ -226,7 +231,10 @@ declare global {
     // Enter submits before the field loses focus: flush its value first
     const path = e.composedPath?.() ?? [];
     const field = path[0] instanceof Element ? path[0] : el;
-    if (e.key === 'Enter') flushField(field);
+    if (e.key === 'Enter') {
+      flushField(field);
+      lastEnterAt = Date.now();
+    }
     send('press', field, { text: e.key });
   }
 

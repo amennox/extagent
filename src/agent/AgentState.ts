@@ -195,6 +195,12 @@ export function renderMessages(t: Transcript, input: RenderInput): ChatMessage[]
   t.turns.forEach((turn, ti) => {
     const isLast = ti === t.turns.length - 1;
     if (turn.protocol === 'native') {
+      // An assistant message needs text or tool_calls: an empty turn (all
+      // output went into reasoning) is represented only by its feedback.
+      if (!turn.calls.length && !turn.text.trim()) {
+        if (turn.feedback && !isLast) messages.push({ role: 'user', content: turn.feedback });
+        return;
+      }
       messages.push({
         role: 'assistant',
         content: turn.text.trim() || null,
@@ -248,6 +254,8 @@ export function estimateTokens(messages: ChatMessage[], systemPrompt = ''): numb
 
 interface CallOutcome {
   signature: string;
+  /** Short fingerprint of the result: same call + same result = no progress */
+  resultKey?: string;
   name: string;
   isError: boolean;
   noChange: boolean;
@@ -258,6 +266,14 @@ interface CallOutcome {
 export interface LoopStatus {
   warning?: string;
   stop?: string;
+}
+
+/** Fingerprint of a tool result for loop detection (ignores timing noise). */
+export function resultKey(text: string): string {
+  const norm = text.replace(/stable after \d+ms/g, 'stable').replace(/\d+ms/g, '').slice(0, 2000);
+  let h = 0;
+  for (let i = 0; i < norm.length; i++) h = (h * 31 + norm.charCodeAt(i)) | 0;
+  return `${norm.length}:${h}`;
 }
 
 export class LoopDetector {
@@ -273,7 +289,7 @@ export class LoopDetector {
     const last = this.history[this.history.length - 1];
     if (!last) return {};
     const window = this.history.slice(-10);
-    const repeats = window.filter(o => o.signature === last.signature).length;
+    const repeats = window.filter(o => o.signature === last.signature && o.resultKey === last.resultKey).length;
     const [warnAt, stopAt] = last.observation ? [4, 7] : [3, 5];
     if (repeats >= stopAt) return { stop: L.loopStop(last.name, repeats) };
 

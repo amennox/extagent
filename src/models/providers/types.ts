@@ -134,8 +134,9 @@ export interface LLMProvider {
   /**
    * @param requestOverrides Extra params merged into the request body for this
    * single call (e.g. `{ response_format: { type: "json_object" } }`).
+   * @param signal Aborts the HTTP request (Stop button).
    */
-  createMessage(systemPrompt: string, messages: any[], tools?: any[], profile?: ModelProfile, requestOverrides?: Record<string, unknown>): ApiStream;
+  createMessage(systemPrompt: string, messages: any[], tools?: any[], profile?: ModelProfile, requestOverrides?: Record<string, unknown>, signal?: AbortSignal): ApiStream;
   getModel(): { id: string; info: ModelInfo };
   getDefaultProfile(): ModelProfile | null;
 }

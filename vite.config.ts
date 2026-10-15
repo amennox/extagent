@@ -13,6 +13,9 @@ export default defineConfig({
   build: {
     // playwright-crx cannot be obfuscated
     minify: false,
+    // The background is a service worker (no `document`): Vite's module
+    // preload helper would crash its dynamic imports.
+    modulePreload: false,
     sourcemap: true,
     outDir: 'dist',
     emptyOutDir: true,

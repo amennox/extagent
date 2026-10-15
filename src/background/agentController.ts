@@ -3,6 +3,7 @@ import type { PlanStep } from "../agent/AgentState";
 import { ExecutionCallbacks, RunResult } from "../agent/ExecutionEngine";
 import { setCurrentPage } from "../agent/PageContextManager";
 import { contextTokenCount } from "../agent/TokenManager";
+import { cancelPendingApprovals } from "../agent/approvalManager";
 import { DomainProfileManager } from "../agent/domainProfileManager";
 import { profilePage, profileSummary, playbookFor } from "../agent/pageProfiler";
 import { getLang, Lang, t } from "../i18n";
@@ -28,6 +29,7 @@ import {
   signalStreamingComplete
 } from "./streamingManager";
 import {
+  attachToTab,
   getCurrentTabId,
   getTabState,
   getWindowForTab,
@@ -167,26 +169,70 @@ export async function initializeAgent(tabId: number, forceReinit: boolean = fals
   }
 }
 
-export function cancelExecution(tabId?: number): void {
-  if (!tabId) {
-    const currentTabId = getCurrentTabId();
-    if (!currentTabId) return;
-    tabId = currentTabId;
-  }
-  const windowId = getWindowForTab(tabId);
-  if (!windowId) return;
-  getAgentForWindow(windowId)?.cancel();
-  cancelHooks.forEach(fn => { try { fn(); } catch { /* ignore */ } });
-  sendUIMessage('updateOutput', { type: 'system', content: 'Cancelling execution...' }, tabId);
-  sendUIMessage('processingComplete', null, tabId);
-  setAgentStatus(windowId, AgentStatus.IDLE);
+/**
+ * One run at a time (agent task or procedure). The page under control, the
+ * interactive map and the action log are shared state, so two concurrent runs
+ * would act on each other's page. Each run has its own cancel token: Stop is
+ * never undone by a run that starts later.
+ */
+export interface ActiveRun {
+  kind: 'task' | 'procedure';
+  tabId?: number;
+  windowId?: number;
+  cancelled: boolean;
+  agent?: BrowserAgent;
+}
+let activeRun: ActiveRun | null = null;
+
+export function getActiveRun(): ActiveRun | null {
+  return activeRun;
 }
 
-/** Other runners (procedures) register here to be stopped by the Stop button. */
-const cancelHooks = new Set<() => void>();
-export function onCancel(fn: () => void): () => void {
-  cancelHooks.add(fn);
-  return () => cancelHooks.delete(fn);
+/** Start a run, or return null when another one is in progress. */
+export function beginRun(run: Omit<ActiveRun, 'cancelled'>): ActiveRun | null {
+  if (activeRun) return null;
+  activeRun = { ...run, cancelled: false };
+  if (run.windowId !== undefined) setAgentStatus(run.windowId, AgentStatus.RUNNING);
+  return activeRun;
+}
+
+export function endRun(run: ActiveRun): void {
+  if (activeRun === run) activeRun = null;
+  if (run.windowId !== undefined) setAgentStatus(run.windowId, AgentStatus.IDLE);
+}
+
+/** Attach the agent that does the work, honouring a Stop that came earlier. */
+function bindAgent(run: ActiveRun, agent: BrowserAgent): void {
+  run.agent = agent;
+  if (run.cancelled) agent.cancel();
+  else agent.resetCancel();
+}
+
+export function busyMessage(lang: Lang): string {
+  return lang === 'en'
+    ? '⏳ Another task or procedure is running. Wait for it to finish or press Stop.'
+    : '⏳ È già in corso un altro task o una procedura. Attendi che finisca o premi Stop.';
+}
+
+export function cancelExecution(tabId?: number): void {
+  if (!tabId) tabId = getCurrentTabId() ?? undefined;
+  const windowId = tabId ? getWindowForTab(tabId) : undefined;
+  const run = activeRun;
+  // Unblock approvals the loop may be waiting on
+  cancelPendingApprovals();
+  if (run) {
+    run.cancelled = true;
+    run.agent?.cancel();
+    if (windowId) getAgentForWindow(windowId)?.cancel();
+    sendUIMessage('updateOutput', { type: 'system', content: 'Cancelling execution...' }, tabId);
+    // processingComplete is sent by the run itself when it has really stopped
+    return;
+  }
+  if (windowId) {
+    getAgentForWindow(windowId)?.cancel();
+    setAgentStatus(windowId, AgentStatus.IDLE);
+  }
+  sendUIMessage('processingComplete', null, tabId);
 }
 
 /** Provider/profile settings the agent was created with, per window. */
@@ -245,7 +291,6 @@ export async function prepareAgent(tabId?: number): Promise<PreparedAgent | null
       type: 'system',
       content: connectionBroken ? 'Debug session was closed, reattaching...' : 'Initializing for tab...',
     }, targetTabId);
-    const { attachToTab } = await import('./tabManager');
     const attachResult = tabState?.page && !connectionBroken ? true : await attachToTab(targetTabId);
     if (attachResult && typeof attachResult === 'object' && 'error' in attachResult) {
       sendUIMessage('updateOutput', {
@@ -370,19 +415,34 @@ async function proceduresHint(url: string, lang: Lang): Promise<string | null> {
  * Run a user request with the agent on the given tab.
  */
 export async function executePrompt(prompt: string, tabId?: number): Promise<void> {
-  let prepared: PreparedAgent | null = null;
+  const lang = await getLang().catch(() => 'it' as Lang);
+  let targetTabId = tabId;
+  if (!targetTabId) targetTabId = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+  const startWindowId = targetTabId ? await chrome.tabs.get(targetTabId).then(t => t?.windowId).catch(() => undefined) : undefined;
+
+  const run = beginRun({ kind: 'task', tabId: targetTabId, windowId: startWindowId });
+  if (!run) {
+    sendUIMessage('updateOutput', { type: 'system', content: busyMessage(lang) }, tabId);
+    sendUIMessage('processingComplete', null, tabId);
+    return;
+  }
+  const cancelled = () => run.cancelled;
+  let completeTab = tabId;
   try {
-    prepared = await prepareAgent(tabId);
-    if (!prepared) {
-      sendUIMessage('processingComplete', null, tabId);
-      return;
+    const prepared = await prepareAgent(targetTabId);
+    if (!prepared || cancelled()) return;
+    const { agent, windowId, url } = prepared;
+    targetTabId = prepared.tabId;
+    completeTab = prepared.tabId;
+    bindAgent(run, agent);
+    if (run.windowId !== windowId) {
+      if (run.windowId !== undefined) setAgentStatus(run.windowId, AgentStatus.IDLE);
+      run.windowId = windowId;
+      setAgentStatus(windowId, AgentStatus.RUNNING);
     }
-    const { agent, tabId: targetTabId, windowId, url } = prepared;
-    const lang = await getLang().catch(() => 'it' as Lang);
     const config = ConfigManager.getInstance();
 
     sendUIMessage('updateOutput', { type: 'system', content: `Executing prompt: "${prompt}"` }, targetTabId);
-    setAgentStatus(windowId, AgentStatus.RUNNING);
     resetStreamingState();
 
     // Context for the first message: memories and procedures for this site
@@ -396,6 +456,7 @@ export async function executePrompt(prompt: string, tabId?: number): Promise<voi
       const procs = await proceduresHint(url, lang);
       if (procs) hints.push(procs);
     }
+    if (cancelled()) return;
 
     // Explicit plan for long multi-step requests (one LLM call), shown as a
     // live checklist in the [STATE] message
@@ -407,6 +468,7 @@ export async function executePrompt(prompt: string, tabId?: number): Promise<voi
         sendUIMessage('updateOutput', { type: 'system', content: `📋 ${plan.map((p, i) => `${i + 1}. ${p.title}`).join(' · ')}` }, targetTabId);
       }
     }
+    if (cancelled()) return;
 
     ActionLog.reset();
     setLastTask(prompt, url);
@@ -426,13 +488,13 @@ export async function executePrompt(prompt: string, tabId?: number): Promise<voi
     if (result.outcome === 'success' && memoryIds.length) {
       await MemoryService.getInstance().reinforceMemories(memoryIds).catch(() => undefined);
     }
-    setAgentStatus(windowId, AgentStatus.IDLE);
-    sendUIMessage('processingComplete', null, targetTabId, windowId);
   } catch (error) {
     const errorMessage = handleError(error, 'executing prompt');
-    sendUIMessage('updateOutput', { type: 'system', content: `Error: ${errorMessage}` }, tabId);
-    if (prepared) setAgentStatus(prepared.windowId, AgentStatus.IDLE);
-    sendUIMessage('processingComplete', null, tabId);
+    sendUIMessage('updateOutput', { type: 'system', content: `Error: ${errorMessage}` }, completeTab);
+  } finally {
+    if (run.cancelled) sendUIMessage('updateOutput', { type: 'system', content: lang === 'en' ? 'Task stopped.' : 'Task interrotto.' }, completeTab);
+    endRun(run);
+    sendUIMessage('processingComplete', null, completeTab);
   }
 }
 
@@ -443,6 +505,11 @@ export async function executePrompt(prompt: string, tabId?: number): Promise<voi
 export async function runAgentSubtask(tabId: number, prompt: string, maxSteps = 20): Promise<RunResult | null> {
   const prepared = await prepareAgent(tabId);
   if (!prepared) return null;
+  const run = activeRun;
+  if (run) {
+    bindAgent(run, prepared.agent);
+    if (run.cancelled) return null;
+  }
   resetStreamingState();
   const callbacks = createUiCallbacks(prepared.tabId);
   return executePromptWithFallback(prepared.agent, prompt, callbacks, [], 'automation', { maxSteps });

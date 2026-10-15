@@ -3,6 +3,13 @@
  */
 export class ErrorHandler {
   private isCancelled: boolean = false;
+  private cancelListeners = new Set<() => void>();
+
+  /** Run `fn` when cancel() is called (e.g. abort an in-flight request). Returns an unsubscribe. */
+  onCancel(fn: () => void): () => void {
+    this.cancelListeners.add(fn);
+    return () => { this.cancelListeners.delete(fn); };
+  }
   
   constructor() {
     this.resetCancel();
@@ -13,6 +20,9 @@ export class ErrorHandler {
    */
   cancel(): void {
     this.isCancelled = true;
+    for (const fn of [...this.cancelListeners]) {
+      try { fn(); } catch { /* ignore */ }
+    }
   }
   
   /**

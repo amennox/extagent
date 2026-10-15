@@ -6,7 +6,7 @@ import { TokenTrackingService } from "../tracking/tokenTrackingService";
 import type { EncodedImage } from "../utils/image";
 import {
   buildStateMessage, classifyResult, estimateTokens, hasMalformedXmlCall, isErrorResult,
-  LoopDetector, parseXmlToolCalls, PlanStep, renderMessages, stripXmlCalls, ToolCallRecord, ToolResultRecord,
+  LoopDetector, parseXmlToolCalls, resultKey, PlanStep, renderMessages, stripXmlCalls, ToolCallRecord, ToolResultRecord,
   Transcript, TurnRecord,
 } from "./AgentState";
 import { ErrorHandler } from "./ErrorHandler";
@@ -19,8 +19,8 @@ import { requestApproval } from "./approvalManager";
 import { ApprovalMode, approvalReason } from "./approvalPolicy";
 import { callSignature, exposedToolSpecs, getToolSpec, normalizeCall, ToolSpec, toolDescription } from "./toolCatalog";
 import { getMapEntry, setVisionEnabled } from "./tools/pageMapTools";
-import { toolResultImage, toolResultText } from "./tools/types";
-import { lastDialog, MAX_RETURN_CHARS, setMaxReturnChars, truncate } from "./tools/utils";
+import { ToolExecutionContext, toolResultImage, toolResultText } from "./tools/types";
+import { getCurrentTabId, lastDialog, MAX_RETURN_CHARS, setMaxReturnChars, truncate } from "./tools/utils";
 
 export const DEFAULT_MAX_STEPS = CONFIG_DEFAULT_MAX_STEPS;
 
@@ -204,7 +204,8 @@ export class ExecutionEngine {
     _isStreaming = true,
     options: ExecuteOptions = {}
   ): Promise<RunResult> {
-    this.errorHandler.resetCancel();
+    // The caller owns the cancel flag (reset when a run starts): resetting it
+    // here would undo a Stop pressed while the task was being prepared.
     this.lastRunStats = { outcome: 'success', toolCalls: 0, toolErrors: 0, steps: 0, actions: 0 };
     const lang: Lang = await getLang().catch(() => 'it' as Lang);
     const S = RUN_STRINGS[lang];
@@ -263,6 +264,7 @@ export class ExecutionEngine {
           throw err;
         }
         if (this.errorHandler.isExecutionCancelled()) break;
+        overflowRetried = false;
 
         // ── Collect tool calls (native first, XML in text as fallback) ──────
         let turnProtocol: 'native' | 'xml' = protocol;
@@ -315,6 +317,7 @@ export class ExecutionEngine {
           const spec = getToolSpec(c.name);
           loop.record({
             signature: callSignature(c.name, args),
+            resultKey: resultKey(result.text),
             name: c.name,
             isError: result.isError,
             noChange: /no visible changes/.test(result.text),
@@ -412,8 +415,12 @@ export class ExecutionEngine {
       callbacks.onToolOutput(`⚠️ ${S.approvalNeeded}: ${reason}`);
       let approved = false;
       try {
-        const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-        approved = await requestApproval(tabs[0]?.id ?? 0, name, displayArgs(name, args, input), reason);
+        // Ask in the side panel of the window the agent works in (not the focused one)
+        const page = getCurrentPage(this.toolManager.getPage());
+        let tabId = await getCurrentTabId(page).catch(() => undefined);
+        if (!tabId) tabId = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+        const windowId = tabId ? await chrome.tabs.get(tabId).then(t => t?.windowId).catch(() => undefined) : undefined;
+        approved = await requestApproval(tabId ?? 0, name, displayArgs(name, args, input), reason, windowId);
       } catch (err) {
         console.error('Approval error:', err);
       }
@@ -426,7 +433,14 @@ export class ExecutionEngine {
 
     let raw;
     try {
-      raw = await this.runWithTimeout(name, () => tool.func(input, reason ? { requiresApproval: true, approvalReason: reason } : undefined));
+      let timedOut = false;
+      const context: ToolExecutionContext = {
+        requiresApproval: !!reason,
+        approvalReason: reason ?? undefined,
+        // Long tools (procedures) stop between steps on Stop or timeout
+        isCancelled: () => timedOut || this.errorHandler.isExecutionCancelled(),
+      };
+      raw = await this.runWithTimeout(name, () => tool.func(input, context), () => { timedOut = true; });
     } catch (err) {
       raw = `Error: ${err instanceof Error ? err.message : String(err)}`;
     }
@@ -436,7 +450,7 @@ export class ExecutionEngine {
     return finish(text, toolResultImage(raw));
   }
 
-  private async runWithTimeout<T>(toolName: string, fn: () => Promise<T>): Promise<T> {
+  private async runWithTimeout<T>(toolName: string, fn: () => Promise<T>, onTimeout?: () => void): Promise<T> {
     let ms = NAVIGATION_TOOLS.has(toolName)
       ? await this.setting(c => c.getNavigationTimeoutMs(), 60_000)
       : await this.setting(c => c.getToolTimeoutMs(), 30_000);
@@ -447,7 +461,10 @@ export class ExecutionEngine {
       return await Promise.race([
         fn(),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`tool "${toolName}" timed out after ${Math.round(ms / 1000)}s`)), ms);
+          timer = setTimeout(() => {
+            onTimeout?.();
+            reject(new Error(`tool "${toolName}" timed out after ${Math.round(ms / 1000)}s`));
+          }, ms);
         }),
       ]);
     } finally {
@@ -568,7 +585,9 @@ export class ExecutionEngine {
       ].join('\n'));
     }
 
-    const stream = this.llmProvider.createMessage(systemPrompt, messages, providerTools, this.activeProfile ?? undefined);
+    const abort = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const unsubscribe = this.errorHandler.onCancel?.(() => abort?.abort()) ?? (() => undefined);
+    const stream = this.llmProvider.createMessage(systemPrompt, messages, providerTools, this.activeProfile ?? undefined, undefined, abort?.signal);
     let text = '';
     let reasoning = '';
     let forwarded = 0;
@@ -577,6 +596,7 @@ export class ExecutionEngine {
     const toolCalls: StreamToolCall[] = [];
     const tracker = TokenTrackingService.getInstance();
 
+    try {
     for await (const chunk of stream as AsyncIterable<StreamChunk>) {
       if (this.errorHandler.isExecutionCancelled()) break;
       switch (chunk.type) {
@@ -597,6 +617,8 @@ export class ExecutionEngine {
           if (chunk.toolCall) toolCalls.push(chunk.toolCall);
           break;
         case 'error':
+          // An aborted request (Stop) is not an error to retry
+          if (this.errorHandler.isExecutionCancelled()) return { text, reasoning, toolCalls: [] };
           throw new LlmStreamError(chunk.error ?? { message: 'Unknown LLM error' });
         case 'text': {
           text += chunk.text ?? '';
@@ -612,6 +634,9 @@ export class ExecutionEngine {
           break;
         }
       }
+    }
+    } finally {
+      unsubscribe();
     }
 
     if (this.debugMode && callbacks.onDebug) {
@@ -641,7 +666,8 @@ function parseArguments(raw: string): string | Record<string, any> {
 
 function displayArgs(name: string, args: Record<string, any>, input: string): string {
   const shown = Object.keys(args).length === 1 && 'input' in args ? input : JSON.stringify(args);
-  const masked = name === 'browser_fill_ref' && /password|pwd|pin/i.test(getMapEntry(Number(args.ref))?.label ?? '')
+  const target = name === 'browser_fill_ref' ? getMapEntry(Number(args.ref)) : undefined;
+  const masked = target && (target.inputType === 'password' || /password|pwd|pin/i.test(target.label))
     ? shown.replace(/("text"\s*:\s*")[^"]*"/, '$1•••"')
     : shown;
   return masked.length > 300 ? `${masked.slice(0, 300)}…` : masked;

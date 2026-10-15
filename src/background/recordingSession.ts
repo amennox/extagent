@@ -30,6 +30,8 @@ export interface ActiveRecording {
 }
 
 let lastCaptureAt = 0;
+/** Tab/window of the active recording, cached to start thumbnails synchronously */
+let cached: { tabId: number; windowId: number } | null = null;
 let listenersAttached = false;
 /** Serializes read-modify-write of the draft: concurrent steps must never overwrite each other. */
 let queue: Promise<unknown> = Promise.resolve();
@@ -107,7 +109,11 @@ function detachListeners(): void {
 
 /** Called at service-worker start: keep recording across restarts. */
 export async function resumeRecordingIfActive(): Promise<void> {
-  if (await getActive()) attachListeners();
+  const active = await getActive();
+  if (active) {
+    cached = { tabId: active.tabId, windowId: active.windowId };
+    attachListeners();
+  }
 }
 
 export async function getRecordingStatus(): Promise<{ active: boolean; name?: string; count?: number }> {
@@ -131,6 +137,7 @@ export async function startRecording(name?: string): Promise<ActiveRecording> {
     startedAt: Date.now(),
   };
   await setActive(active);
+  cached = { tabId: active.tabId, windowId: active.windowId };
   attachListeners();
   await inject(tab.id);
   notify({ count: active.actions.length, description: `Pagina iniziale ${tab.url}` });
@@ -156,10 +163,13 @@ export async function addCapturedStep(
   message: { step: CapturedAction; rect?: { x: number; y: number; width: number; height: number }; dpr?: number },
   sender: chrome.runtime.MessageSender
 ): Promise<void> {
-  // Capture the thumbnail right away (closest to the action), store in order
-  const pre = await getActive();
-  if (!pre || sender.tab?.id !== pre.tabId) return;
-  const thumb = thumbnail(pre.windowId, sender.frameId ? undefined : message.rect, message.dpr ?? 1);
+  // Start the thumbnail right away (closest to the action); the step itself is
+  // stored in arrival order, entirely inside the queue (no step can slip
+  // between a stop and the final read).
+  const tabMatches = cached && sender.tab?.id === cached.tabId;
+  const thumb = tabMatches
+    ? thumbnail(cached!.windowId, sender.frameId ? undefined : message.rect, message.dpr ?? 1)
+    : Promise.resolve(undefined);
   return serialized(async () => {
     const active = await getActive();
     if (!active || sender.tab?.id !== active.tabId) return;
@@ -174,12 +184,17 @@ export async function addCapturedStep(
 }
 
 export async function stopRecording(): Promise<Procedure | null> {
-  await queue;
-  const active = await getActive();
+  const pre = await getActive();
   detachListeners();
-  if (!active) return null;
-  chrome.tabs.sendMessage(active.tabId, { action: 'stopRecordingCapture' }, () => void chrome.runtime.lastError);
+  if (!pre) return null;
+  // Stop the capture first: the content script flushes fields still being
+  // edited; give those last messages time to arrive and be queued.
+  chrome.tabs.sendMessage(pre.tabId, { action: 'stopRecordingCapture' }, () => void chrome.runtime.lastError);
+  await new Promise(r => setTimeout(r, 400));
+  await queue;
+  const active = (await getActive()) ?? pre;
   await setActive(null);
+  cached = null;
   if (active.actions.filter(a => a.type !== 'navigate').length === 0) return null;
   const proc = buildProcedure(active.actions, { name: active.name, source: 'recording', startUrl: active.startUrl });
   return ProcedureStore.getInstance().save(proc);
@@ -188,6 +203,7 @@ export async function stopRecording(): Promise<Procedure | null> {
 export async function cancelRecording(): Promise<void> {
   const active = await getActive();
   detachListeners();
+  cached = null;
   if (active) chrome.tabs.sendMessage(active.tabId, { action: 'stopRecordingCapture' }, () => void chrome.runtime.lastError);
   await setActive(null);
 }

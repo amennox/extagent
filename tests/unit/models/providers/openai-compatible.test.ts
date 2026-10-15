@@ -379,8 +379,16 @@ describe('isContextOverflowError', () => {
     expect(isContextOverflowError({ status: 413, message: 'Payload Too Large' })).toBe(true);
   });
 
-  it('ritorna true per status 422', () => {
-    expect(isContextOverflowError({ status: 422, message: 'Unprocessable Entity' })).toBe(true);
+  it('non tratta ogni 422 come overflow (solo con parole chiave)', () => {
+    expect(isContextOverflowError({ status: 422, message: 'Unprocessable Entity' })).toBe(false);
+    expect(isContextOverflowError({ status: 422, message: 'prompt is too long for this model' })).toBe(true);
+  });
+
+  it('riconosce gli overflow 400 di OpenAI, vLLM e llama.cpp', () => {
+    expect(isContextOverflowError({ status: 400, code: 'context_length_exceeded', message: 'This model\'s maximum context length is 8192 tokens' })).toBe(true);
+    expect(isContextOverflowError({ status: 400, message: "This model's maximum context length is 32768 tokens. However, you requested 40000 tokens" })).toBe(true);
+    expect(isContextOverflowError({ status: 400, error: { code: 'exceed_context_size_error' }, message: 'the request exceeds the available context size' })).toBe(true);
+    expect(isContextOverflowError({ status: 400, message: 'invalid temperature' })).toBe(false);
   });
 
   it('ritorna true per status 500 con messaggio context_length', () => {
@@ -420,6 +428,20 @@ describe('OpenAICompatibleProvider - native tool calls and errors', () => {
     ]);
     expect(chunks.filter(c => c.type === 'text').map(c => c.text).join('')).toBe('Compilo.');
     expect(capturedRequestBody.tool_choice).toBe('auto');
+  });
+
+  it('separates parallel calls from gateways that omit the delta index', async () => {
+    mockStreamChunks = [
+      { choices: [{ delta: { tool_calls: [{ id: 'a', function: { name: 'browser_fill_ref', arguments: '{"ref":3,' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ function: { arguments: '"text":"x"}' } }] } }] },
+      { choices: [{ delta: { tool_calls: [{ id: 'b', function: { name: 'browser_click_ref', arguments: '{"ref":5}' } }] } }] },
+    ];
+    const provider = new OpenAICompatibleProvider(baseOptions);
+    const chunks = await collectStream(provider.createMessage('sys', [], [{ name: 't', description: 'd' }], fastProfile));
+    expect(chunks.filter(c => c.type === 'tool_call').map(c => c.toolCall)).toEqual([
+      { id: 'a', name: 'browser_fill_ref', arguments: '{"ref":3,"text":"x"}' },
+      { id: 'b', name: 'browser_click_ref', arguments: '{"ref":5}' },
+    ]);
   });
 
   it('passes tool_calls, tool results and image parts through to the API', async () => {

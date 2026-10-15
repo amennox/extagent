@@ -32,6 +32,8 @@ export interface MapEntry {
   candidates: string[];
   /** Viewport rect in main-frame coordinates (for Set-of-Marks) */
   rect?: MapRect;
+  /** HTML input type (password detection) */
+  inputType?: string;
   /** 0 = main frame */
   frameIndex?: number;
   frameUrl?: string;
@@ -336,6 +338,7 @@ function scanInteractiveElements(args: ScanArgs): ScanResult {
       value,
       state: states.length ? states.join(',') : undefined,
       candidates,
+      inputType: el instanceof HTMLInputElement ? el.type : undefined,
       rect: { x: Math.round(r.left + offsetX), y: Math.round(top), width: Math.round(r.width), height: Math.round(r.height) },
     });
   }
@@ -789,6 +792,7 @@ export function browserFillRef(page: Page) {
           ActionLog.push({
             type: 'type', selector: resolved.entry.candidates[0], candidates: resolved.entry.candidates,
             text, elementLabel: resolved.entry.label, role: resolved.entry.role, frameUrl: resolved.entry.frameUrl,
+            inputType: resolved.entry.inputType,
             pageUrl: currentMap?.url, description: `type in "${resolved.entry.label}"`,
           });
           if (submit) {
@@ -797,7 +801,7 @@ export function browserFillRef(page: Page) {
               elementLabel: resolved.entry.label, frameUrl: resolved.entry.frameUrl, description: `Enter in "${resolved.entry.label}"`,
             });
           }
-          const shown = /password/i.test(resolved.entry.label) ? '•••' : text;
+          const shown = resolved.entry.inputType === 'password' || /password/i.test(resolved.entry.label) ? '•••' : text;
           return await afterRefAction(activePage, `Filled [${ref}] "${resolved.entry.label}" with "${shown}"${submit ? ' and pressed Enter' : ''}`);
         });
       } catch (err) {

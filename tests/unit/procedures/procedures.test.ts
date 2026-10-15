@@ -1,6 +1,6 @@
 import { buildProcedure, CapturedAction, makeParam, suggestParams, undeclaredParams } from '../../../src/procedures/builder';
 import { migrateLegacyAutomations } from '../../../src/procedures/migration';
-import { missingParams } from '../../../src/procedures/runner';
+import { missingParams, ProcedureRunner } from '../../../src/procedures/runner';
 import { sensitiveKind } from '../../../src/procedures/sensitive';
 import { procedureToMarkdown, ProcedureStore, sanitizeProcedure } from '../../../src/procedures/store';
 
@@ -176,5 +176,35 @@ describe('migrateLegacyAutomations', () => {
     // Legacy data untouched, migration not repeated
     expect(data.recordings.login).toBeTruthy();
     expect(await migrateLegacyAutomations()).toBe(0);
+  });
+});
+
+describe('ProcedureRunner and secrets', () => {
+  it('never sends secret parameter values to the agent', async () => {
+    const proc = buildProcedure([], { name: 'Login', source: 'manual' });
+    proc.params = [{ name: 'password', type: 'secret', required: true }, { name: 'utente', type: 'text', required: true }];
+    proc.steps = [{ id: 's1', type: 'ai', description: 'Accedi', instruction: 'Accedi come {{utente}} con password {{password}}', approval: 'auto' }];
+    const seen: string[] = [];
+    const report = await new ProcedureRunner({} as any).run(proc, {
+      params: { utente: 'mario', password: 'segretissima' },
+      aiResolver: async (req) => { seen.push(req.instruction); return { ok: true }; },
+    });
+    expect(report.status).toBe('success');
+    expect(seen[0]).toContain('mario');
+    expect(seen[0]).not.toContain('segretissima');
+  });
+
+  it('stops between steps when cancelled', async () => {
+    const proc = buildProcedure([], { name: 'X', source: 'manual' });
+    proc.steps = [
+      { id: 'a', type: 'ai', description: 'uno', instruction: 'uno', approval: 'auto' },
+      { id: 'b', type: 'ai', description: 'due', instruction: 'due', approval: 'auto' },
+    ];
+    let cancelled = false;
+    const report = await new ProcedureRunner({} as any).run(proc, {
+      isCancelled: () => cancelled,
+      aiResolver: async () => { cancelled = true; return { ok: true }; },
+    });
+    expect(report).toMatchObject({ status: 'cancelled', stepsDone: 1, stoppedAt: 1 });
   });
 });

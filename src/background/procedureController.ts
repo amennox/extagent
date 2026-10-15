@@ -7,10 +7,9 @@ import { createProvider } from '../models/providers/factory';
 import { AiRequest, missingParams, ProcedureRunner, RunReport } from '../procedures/runner';
 import { ProcedureStore } from '../procedures/store';
 import { Procedure } from '../procedures/types';
-import { onCancel, prepareAgent, runAgentSubtask, setAgentStatus } from './agentController';
+import { beginRun, busyMessage, endRun, prepareAgent, runAgentSubtask } from './agentController';
 import { ConfigManager } from './configManager';
 import { attachToTab, getTabState } from './tabManager';
-import { AgentStatus } from './types';
 import { logWithTimestamp, sendUIMessage } from './utils';
 
 /**
@@ -30,8 +29,6 @@ export interface RunProcedureRequest {
   endAt?: number;
   mode?: 'direct' | 'test';
 }
-
-let running = false;
 
 /** The web tab to act on: the given one, else the most recently used http(s) tab. */
 export async function resolveTargetTab(tabId?: number): Promise<number | undefined> {
@@ -91,7 +88,6 @@ export async function runProcedureDirect(req: RunProcedureRequest): Promise<RunR
 }
 
 async function runProcedureInner(req: RunProcedureRequest): Promise<RunReport | { error: string }> {
-  if (running) return { error: 'A procedure is already running' };
   const store = ProcedureStore.getInstance();
   const proc = await store.get(req.procedureId);
   if (!proc) return { error: 'Procedure not found' };
@@ -103,11 +99,9 @@ async function runProcedureInner(req: RunProcedureRequest): Promise<RunReport | 
   const missing = missingParams(proc, params);
   if (missing.length) return { error: `${lang === 'en' ? 'Missing parameters' : 'Parametri mancanti'}: ${missing.join(', ')}` };
 
-  running = true;
-  let cancelled = false;
   const windowId = await chrome.tabs.get(tabId).then(t => t?.windowId).catch(() => undefined);
-  if (windowId !== undefined) setAgentStatus(windowId, AgentStatus.RUNNING);
-  const unregister = onCancel(() => { cancelled = true; });
+  const run = beginRun({ kind: 'procedure', tabId, windowId });
+  if (!run) return { error: busyMessage(lang) };
   const started = Date.now();
   const say = (content: string) => sendUIMessage('updateOutput', { type: 'system', content }, tabId);
   try {
@@ -127,7 +121,7 @@ async function runProcedureInner(req: RunProcedureRequest): Promise<RunReport | 
       startAt: req.startAt,
       endAt: req.endAt,
       approvalMode,
-      isCancelled: () => cancelled,
+      isCancelled: () => run.cancelled,
       onStep: (ev) => {
         sendUIMessage('procedureProgress', {
           procedureId: proc.id, index: ev.index, total: ev.total, status: ev.status,
@@ -167,9 +161,7 @@ async function runProcedureInner(req: RunProcedureRequest): Promise<RunReport | 
     logWithTimestamp(`Procedure run failed: ${err instanceof Error ? err.message : String(err)}`, 'error');
     return { error: err instanceof Error ? err.message : String(err) };
   } finally {
-    unregister();
-    running = false;
-    if (windowId !== undefined) setAgentStatus(windowId, AgentStatus.IDLE);
+    endRun(run);
     sendUIMessage('processingComplete', null, tabId);
   }
 }

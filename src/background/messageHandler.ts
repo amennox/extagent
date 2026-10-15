@@ -1,6 +1,6 @@
 import { handleApprovalResponse } from '../agent/approvalManager';
 import { TokenTrackingService } from '../tracking/tokenTrackingService';
-import { executePrompt, applyTaskFeedback, saveLastTaskAsProcedure } from './agentController';
+import { executePrompt, applyTaskFeedback, getAgentStatus, saveLastTaskAsProcedure } from './agentController';
 import { cancelExecution } from './agentController';
 import { clearMessageHistory } from './agentController';
 import { initializeAgent } from './agentController';
@@ -507,7 +507,6 @@ async function handleCheckAgentStatus(
     }
     
     // Get the agent status from agentController using dynamic import
-    const { getAgentStatus } = await import('./agentController');
     const status = getAgentStatus(windowId);
     
     // Send the status back to the UI
